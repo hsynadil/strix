@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>perf-diag</title>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="dot"></span>
+        <h1>perf-diag</h1>
+      </div>
+      <div class="stats">
+        <div class="stat">
+          <span class="stat-label">CPU</span>
+          <div class="stat-row">
+            <span class="stat-value" id="cpu-value">—</span>
+            <canvas class="spark" id="cpu-spark" width="120" height="28"></canvas>
+          </div>
+          <div class="bar"><div class="bar-fill" id="cpu-bar"></div></div>
+        </div>
+        <div class="stat">
+          <span class="stat-label">RAM</span>
+          <div class="stat-row">
+            <span class="stat-value" id="mem-value">—</span>
+            <canvas class="spark" id="mem-spark" width="120" height="28"></canvas>
+          </div>
+          <div class="bar"><div class="bar-fill" id="mem-bar"></div></div>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Processes</span>
+          <span class="stat-value" id="proc-count">—</span>
+        </div>
+      </div>
+      <nav class="tabs">
+        <button class="tab active" data-view="live">Live</button>
+        <button class="tab" data-view="history">History</button>
+      </nav>
+    </header>
+
+    <!-- Live view -->
+    <section id="live-view" class="view">
+      <div class="toolbar">
+        <input id="filter" type="text" placeholder="Filter by name or user…" autocomplete="off" />
+        <label class="rate">
+          Refresh
+          <select id="rate">
+            <option value="1000">1s</option>
+            <option value="1500" selected>1.5s</option>
+            <option value="2000">2s</option>
+            <option value="5000">5s</option>
+          </select>
+        </label>
+        <button id="group-btn" class="ghost" title="Group processes by application">▤ Group</button>
+        <button id="pause-btn" class="ghost" title="Pause / resume live updates">⏸ Pause</button>
+        <span class="hint" id="status">Loading…</span>
+      </div>
+      <main class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th class="sortable" data-key="name">Name</th>
+              <th class="sortable" data-key="user">User</th>
+              <th class="sortable num" data-key="pid">PID</th>
+              <th class="sortable num" data-key="cpu">CPU %</th>
+              <th class="sortable num" data-key="memory">Memory</th>
+              <th class="sortable num" data-key="disk">Disk R/W</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </main>
+    </section>
+
+    <!-- History view -->
+    <section id="history-view" class="view" hidden>
+      <div class="toolbar">
+        <div class="ranges" id="ranges">
+          <button data-secs="300">5m</button>
+          <button data-secs="1800" class="active">30m</button>
+          <button data-secs="10800">3h</button>
+          <button data-secs="86400">24h</button>
+          <button data-secs="259200">3d</button>
+        </div>
+        <span class="hint" id="hist-status">—</span>
+      </div>
+      <div class="hist-body">
+        <div class="charts" id="charts">
+          <div class="chart">
+            <span class="chart-label">CPU %</span>
+            <canvas id="chart-cpu"></canvas>
+          </div>
+          <div class="chart">
+            <span class="chart-label">RAM used</span>
+            <canvas id="chart-mem"></canvas>
+          </div>
+          <div class="chart">
+            <span class="chart-label">Disk R/W</span>
+            <canvas id="chart-disk"></canvas>
+          </div>
+        </div>
+        <aside class="top-panel">
+          <h3 id="top-title">Hover the timeline</h3>
+          <div class="top-sub" id="top-sub"></div>
+          <ol id="top-list"></ol>
+        </aside>
+      </div>
+    </section>
+  </body>
+</html>
