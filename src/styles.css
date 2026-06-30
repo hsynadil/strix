@@ -276,6 +276,56 @@ button.kill:hover { color: var(--hot); border-color: var(--hot); background: rgb
 .badge.live { color: var(--hot); background: rgba(248, 81, 73, 0.12); }
 .badge.idle { color: var(--muted); background: rgba(139, 148, 158, 0.12); }
 
+/* App Details modal ---------------------------------------------------- */
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.modal[hidden] { display: none; }
+.modal-card {
+  width: min(560px, 92vw);
+  max-height: 86vh;
+  overflow: auto;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  padding: 18px 20px;
+}
+.modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.modal-head h2 { margin: 0; font-size: 16px; font-weight: 600; }
+.md-desc { color: var(--muted); font-size: 13px; line-height: 1.5; margin: 10px 0 16px; }
+.md-grid {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 6px 14px;
+  margin: 0;
+  font-size: 12px;
+}
+.md-grid dt { color: var(--muted); }
+.md-grid dd {
+  margin: 0;
+  word-break: break-all;
+  font-variant-numeric: tabular-nums;
+}
+.modal-foot { margin-top: 18px; display: flex; justify-content: flex-end; }
+.danger {
+  padding: 7px 16px;
+  background: rgba(248, 81, 73, 0.12);
+  border: 1px solid var(--hot);
+  border-radius: 6px;
+  color: var(--hot);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+.danger:hover { background: rgba(248, 81, 73, 0.2); }
+
 /* Scrollbar ------------------------------------------------------------ */
 ::-webkit-scrollbar { width: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 5px; }

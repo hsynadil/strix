@@ -239,6 +239,7 @@ function cpuClass(v: number): string {
 }
 
 function updateProcRow(r: RowRec, p: ProcInfo, indent: boolean) {
+  r.tr.dataset.pid = String(p.pid);
   setText(r.name, p.name);
   r.name.title = `${p.exe || p.name}\nStatus: ${p.status} · Uptime: ${fmtDuration(p.run_time)}`;
   r.name.classList.toggle("child", indent);
@@ -673,6 +674,109 @@ function switchView(view: View) {
   }
 }
 
+// --- app details modal ------------------------------------------------------
+
+interface AppDetails {
+  pid: number;
+  name: string;
+  exe: string;
+  cmd: string;
+  cwd: string;
+  parent_pid: number | null;
+  parent_name: string;
+  user: string;
+  status: string;
+  start_time: number;
+  run_time: number;
+  memory: number;
+  cpu: number;
+  disk_read: number;
+  disk_write: number;
+}
+
+let detailPid: number | null = null;
+
+// Plain-language descriptions for common Windows processes & popular apps.
+const DESCRIPTIONS: Record<string, string> = {
+  "explorer.exe": "Windows File Explorer and the desktop shell — taskbar, Start menu and desktop icons.",
+  "svchost.exe": "Service Host: a shared container that runs Windows background services. Many copies are normal.",
+  "dwm.exe": "Desktop Window Manager — composites and draws the Windows desktop, transparency and animations.",
+  "csrss.exe": "Client/Server Runtime — a core Windows system process. Required; do not end it.",
+  "services.exe": "Service Control Manager — starts and stops Windows services. Critical system process.",
+  "lsass.exe": "Local Security Authority — handles logins and security policy. Critical system process.",
+  "wininit.exe": "Windows Initialization — launches core background processes at startup. Critical.",
+  "winlogon.exe": "Handles user logon/logoff and the secure desktop. Critical system process.",
+  "runtimebroker.exe": "Manages permissions (files, camera, etc.) for Microsoft Store apps.",
+  "searchhost.exe": "Powers Windows Search and the Start menu search box.",
+  "searchindexer.exe": "Builds the search index so files and settings can be found quickly.",
+  "ctfmon.exe": "Handles text input, language bar and the on-screen keyboard.",
+  "conhost.exe": "Console Window Host — hosts the window for command-line programs.",
+  "fontdrvhost.exe": "Font Driver Host — loads and renders fonts. System process.",
+  "audiodg.exe": "Windows Audio Device Graph — processes audio effects and mixing.",
+  "taskhostw.exe": "Host process for Windows scheduled tasks and background DLL-based tasks.",
+  "sihost.exe": "Shell Infrastructure Host — runs shell features like the Start menu and notifications.",
+  "smss.exe": "Session Manager — the first user-mode process Windows starts. Critical.",
+  "registry": "In-memory store for the Windows Registry. System-managed.",
+  "system": "The Windows kernel and system threads. Cannot be ended.",
+  "memory compression": "Compresses rarely-used memory pages to reduce RAM pressure.",
+  "msmpeng.exe": "Microsoft Defender Antivirus engine — real-time scanning.",
+  "chrome.exe": "Google Chrome web browser. Each tab/extension runs as its own process.",
+  "msedge.exe": "Microsoft Edge web browser. Each tab/extension runs as its own process.",
+  "brave.exe": "Brave web browser (Chromium-based). Each tab runs as its own process.",
+  "firefox.exe": "Mozilla Firefox web browser.",
+  "code.exe": "Visual Studio Code editor.",
+  "discord.exe": "Discord voice and text chat client.",
+  "steam.exe": "Steam game client and store.",
+  "unrealeditor.exe": "Unreal Engine editor.",
+};
+
+function describe(name: string): string {
+  return (
+    DESCRIPTIONS[name.toLowerCase()] ??
+    "No description on file. Check Explorer → Properties → Details for the publisher."
+  );
+}
+
+function esc(s: string): string {
+  return s.replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!),
+  );
+}
+
+async function openDetails(pid: number) {
+  try {
+    const d = await invoke<AppDetails>("get_app_details", { pid });
+    detailPid = pid;
+    byId("md-name").textContent = `${d.name} · PID ${d.pid}`;
+    byId("md-desc").textContent = describe(d.name);
+    const started = d.start_time > 0 ? new Date(d.start_time * 1000).toLocaleString() : "—";
+    const rows: [string, string][] = [
+      ["Executable", d.exe || "—"],
+      ["Command line", d.cmd || "—"],
+      ["Working dir", d.cwd || "—"],
+      ["User", d.user || "—"],
+      ["Status", d.status],
+      ["Parent", d.parent_pid != null ? `${d.parent_name || "?"} (${d.parent_pid})` : "—"],
+      ["Started", started],
+      ["Uptime", fmtDuration(d.run_time)],
+      ["CPU", `${d.cpu.toFixed(1)}%`],
+      ["Memory", fmtBytes(d.memory)],
+      ["Disk R/W", fmtRate(d.disk_read + d.disk_write)],
+    ];
+    byId("md-grid").innerHTML = rows
+      .map(([k, v]) => `<dt>${k}</dt><dd title="${esc(v)}">${esc(v)}</dd>`)
+      .join("");
+    byId("modal").hidden = false;
+  } catch (e) {
+    byId("status").textContent = `Details failed: ${e}`;
+  }
+}
+
+function closeDetails() {
+  byId("modal").hidden = true;
+  detailPid = null;
+}
+
 // --- wiring -----------------------------------------------------------------
 
 window.addEventListener("DOMContentLoaded", () => {
@@ -757,6 +861,29 @@ window.addEventListener("DOMContentLoaded", () => {
 
   window.addEventListener("resize", () => {
     if (currentView === "history") drawCharts(cursorIdx);
+  });
+
+  // App Details: right-click or double-click a process row.
+  const openFromEvent = (e: Event) => {
+    const tr = (e.target as HTMLElement).closest("tr") as HTMLElement | null;
+    const pid = tr?.dataset.pid;
+    if (tr?.classList.contains("group")) return;
+    e.preventDefault();
+    if (pid) openDetails(Number(pid));
+  };
+  byId("rows").addEventListener("contextmenu", openFromEvent);
+  byId("rows").addEventListener("dblclick", openFromEvent);
+
+  byId("md-close").addEventListener("click", closeDetails);
+  byId("modal").addEventListener("click", (e) => {
+    if (e.target === byId("modal")) closeDetails();
+  });
+  byId("md-kill").addEventListener("click", () => {
+    if (detailPid != null) killProcess(detailPid);
+    closeDetails();
+  });
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !byId("modal").hidden) closeDetails();
   });
 
   updateSortHeaders();

@@ -337,6 +337,72 @@ fn get_top_at(ts: i64, state: State<'_, Arc<Shared>>) -> Result<Vec<TopProc>, St
         .map_err(|e| e.to_string())
 }
 
+// --- app details ------------------------------------------------------------
+
+#[derive(Serialize)]
+struct AppDetails {
+    pid: u32,
+    name: String,
+    exe: String,
+    cmd: String,
+    cwd: String,
+    parent_pid: Option<u32>,
+    parent_name: String,
+    user: String,
+    status: String,
+    start_time: i64,
+    run_time: u64,
+    memory: u64,
+    cpu: f32,
+    disk_read: u64,
+    disk_write: u64,
+}
+
+/// Rich, on-demand detail for a single process (read from the cached System).
+#[tauri::command]
+fn get_app_details(pid: u32, state: State<'_, Arc<Shared>>) -> Result<AppDetails, String> {
+    let sys = state.sys.lock().unwrap();
+    let p = sys
+        .process(Pid::from_u32(pid))
+        .ok_or_else(|| format!("Process {pid} not found"))?;
+
+    let cpu_count = sys.cpus().len().max(1) as f32;
+    let parent = p.parent();
+    let parent_name = parent
+        .and_then(|pp| sys.process(pp))
+        .map(|pp| pp.name().to_string_lossy().to_string())
+        .unwrap_or_default();
+    let user = p
+        .user_id()
+        .and_then(|uid| state.users.get_user_by_id(uid))
+        .map(|u| u.name().to_string())
+        .unwrap_or_default();
+    let disk = p.disk_usage();
+
+    Ok(AppDetails {
+        pid,
+        name: p.name().to_string_lossy().to_string(),
+        exe: p.exe().map(|e| e.to_string_lossy().to_string()).unwrap_or_default(),
+        cmd: p
+            .cmd()
+            .iter()
+            .map(|c| c.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join(" "),
+        cwd: p.cwd().map(|e| e.to_string_lossy().to_string()).unwrap_or_default(),
+        parent_pid: parent.map(|x| x.as_u32()),
+        parent_name,
+        user,
+        status: p.status().to_string(),
+        start_time: p.start_time() as i64,
+        run_time: p.run_time(),
+        memory: p.memory(),
+        cpu: p.cpu_usage() / cpu_count,
+        disk_read: disk.read_bytes,
+        disk_write: disk.written_bytes,
+    })
+}
+
 // --- privacy / sensor access (Windows ConsentStore) -------------------------
 
 #[derive(Serialize, Clone)]
@@ -442,7 +508,8 @@ pub fn run() {
             get_history_window,
             get_history,
             get_top_at,
-            get_sensor_access
+            get_sensor_access,
+            get_app_details
         ])
         .setup(|app| {
             // Database lives in the app's local data directory.
