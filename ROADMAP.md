@@ -1,6 +1,7 @@
-# perf-diag — Roadmap
+# Strix — Roadmap
 
-A lightweight Windows process & performance monitor inspired by **AppControl**.
+**Strix** — a lightweight Windows process & performance monitor inspired by **AppControl**.
+(The repo folder is still `perf-diag`; the product name is Strix.)
 Built with **Tauri + Rust** (backend) and **vanilla TS + Vite** (frontend).
 
 Goal: match AppControl's standout features (historical timeline, privacy alerts,
