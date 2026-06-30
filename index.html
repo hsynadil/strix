@@ -40,6 +40,7 @@
         <button class="tab active" data-view="live">Live</button>
         <button class="tab" data-view="history">History</button>
         <button class="tab" data-view="privacy">Privacy</button>
+        <button class="tab" data-view="temps">Temps</button>
       </nav>
     </header>
 
@@ -130,6 +131,41 @@
           <tbody id="sensor-rows"></tbody>
         </table>
       </main>
+    </section>
+
+    <!-- Temps view -->
+    <section id="temps-view" class="view" hidden>
+      <div id="temps-empty" class="temps-empty" hidden>
+        <h2>No temperature source found</h2>
+        <p>
+          <strong>GPU temperature</strong> is read automatically from the NVIDIA driver
+          (<code>nvidia-smi</code>) — this needs an NVIDIA GPU with its driver installed.
+        </p>
+        <p>
+          <strong>CPU temperature</strong> needs a kernel-level sensor driver, which Windows
+          won't expose to a normal app. To see it, run <strong>HWiNFO64</strong> with
+          <em>Settings → Shared Memory Support</em> enabled and perf-diag will read from it.
+        </p>
+      </div>
+      <div id="temps-content" class="temps-content" hidden>
+        <div id="temps-summary" class="temps-summary"></div>
+        <p class="temps-note">
+          GPU via NVIDIA driver. CPU/board temps appear when HWiNFO runs with Shared Memory enabled.
+        </p>
+        <main class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Sensor</th>
+                <th class="num">Current</th>
+                <th class="num">Min</th>
+                <th class="num">Max</th>
+              </tr>
+            </thead>
+            <tbody id="temp-rows"></tbody>
+          </table>
+        </main>
+      </div>
     </section>
 
     <!-- App Details modal -->

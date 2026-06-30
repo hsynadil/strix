@@ -27,5 +27,10 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 winreg = "0.52"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
+windows-sys = { version = "0.61", features = [
+    "Win32_Storage_FileSystem",
+    "Win32_Foundation",
+    "Win32_System_Memory",
+] }
+wmi = "0.14"
 

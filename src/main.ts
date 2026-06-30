@@ -418,7 +418,7 @@ interface TopProc {
   memory: number;
 }
 
-type View = "live" | "history" | "privacy";
+type View = "live" | "history" | "privacy" | "temps";
 let currentView: View = "live";
 let rangeSecs = 1800;
 let histData: MetricPoint[] = [];
@@ -650,11 +650,82 @@ function stopPrivacyTimer() {
   privacyTimer = undefined;
 }
 
+// --- temperatures -----------------------------------------------------------
+
+interface TempSensor {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+}
+
+interface Temperatures {
+  available: boolean;
+  sensors: TempSensor[];
+}
+
+let tempsTimer: number | undefined;
+
+function tempClass(v: number): string {
+  return v >= 85 ? "hot" : v >= 70 ? "warm" : "";
+}
+
+function renderTemps(t: Temperatures) {
+  const empty = byId("temps-empty");
+  const content = byId("temps-content");
+  if (!t.available) {
+    empty.hidden = false;
+    content.hidden = true;
+    return;
+  }
+  empty.hidden = true;
+  content.hidden = false;
+
+  const hottest = t.sensors.reduce((m, s) => (s.value > m ? s.value : m), 0);
+  byId("temps-summary").innerHTML = t.sensors.length
+    ? `<span class="ts-big ${tempClass(hottest)}">${hottest.toFixed(0)}°</span>` +
+      `<span class="ts-sub">hottest of ${t.sensors.length} sensors · via HWiNFO</span>`
+    : `<span class="ts-sub">HWiNFO connected, but no temperature sensors were reported.</span>`;
+
+  byId("temp-rows").innerHTML = t.sensors
+    .map(
+      (s) =>
+        `<tr>
+          <td class="name" title="${esc(s.label)}">${esc(s.label)}</td>
+          <td class="num ${tempClass(s.value)}">${s.value.toFixed(1)}°C</td>
+          <td class="num muted">${s.min.toFixed(1)}°</td>
+          <td class="num muted">${s.max.toFixed(1)}°</td>
+        </tr>`,
+    )
+    .join("");
+}
+
+async function loadTemps() {
+  try {
+    const t = await invoke<Temperatures>("get_temperatures");
+    renderTemps(t);
+  } catch (e) {
+    byId("temps-empty").hidden = false;
+    byId("temps-content").hidden = true;
+  }
+}
+
+function startTempsTimer() {
+  stopTempsTimer();
+  tempsTimer = window.setInterval(loadTemps, 2000);
+}
+
+function stopTempsTimer() {
+  if (tempsTimer !== undefined) clearInterval(tempsTimer);
+  tempsTimer = undefined;
+}
+
 function switchView(view: View) {
   currentView = view;
   byId("live-view").hidden = view !== "live";
   byId("history-view").hidden = view !== "history";
   byId("privacy-view").hidden = view !== "privacy";
+  byId("temps-view").hidden = view !== "temps";
   document.querySelectorAll(".tab").forEach((t) => {
     t.classList.toggle("active", (t as HTMLElement).dataset.view === view);
   });
@@ -671,6 +742,13 @@ function switchView(view: View) {
     startPrivacyTimer();
   } else {
     stopPrivacyTimer();
+  }
+
+  if (view === "temps") {
+    loadTemps();
+    startTempsTimer();
+  } else {
+    stopTempsTimer();
   }
 }
 

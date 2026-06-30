@@ -5,7 +5,7 @@
 // processes to SQLite with a rolling retention window, powering the timeline.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection};
@@ -26,6 +26,8 @@ struct Shared {
     db: Mutex<Connection>,
     latest: RwLock<Snapshot>,
     blocks: RwLock<BlockSet>,
+    /// Latest CPU/board temps from WMI (sampler-populated; empty unless elevated).
+    cpu_temp: RwLock<Vec<TempSensor>>,
 }
 
 /// In-memory blocklist (lowercased) for fast enforcement in the sampler.
@@ -277,6 +279,17 @@ fn prune(conn: &Connection, cutoff: i64) {
 fn sampler_loop(shared: Arc<Shared>) {
     let mut tick: u32 = 0;
     let mut pub_cache: HashMap<String, String> = HashMap::new();
+
+    // WMI connection for ACPI temperatures, set up once on this thread. Works
+    // only when the process is elevated; the per-cycle query fails otherwise.
+    #[cfg(windows)]
+    let wmi_thermal: Option<wmi::WMIConnection> = {
+        use wmi::{COMLibrary, WMIConnection};
+        COMLibrary::new()
+            .ok()
+            .and_then(|com| WMIConnection::with_namespace_path("ROOT\\WMI", com).ok())
+    };
+
     loop {
         std::thread::sleep(Duration::from_secs(SAMPLE_SECS));
 
@@ -288,6 +301,14 @@ fn sampler_loop(shared: Arc<Shared>) {
             }
             s
         };
+
+        #[cfg(windows)]
+        {
+            let acpi = read_acpi_temps(wmi_thermal.as_ref());
+            if let Ok(mut slot) = shared.cpu_temp.write() {
+                *slot = acpi;
+            }
+        }
 
         if let Ok(mut latest) = shared.latest.write() {
             *latest = snap.clone();
@@ -642,6 +663,242 @@ fn remove_block(kind: String, value: String, state: State<'_, Arc<Shared>>) -> R
     Ok(())
 }
 
+// --- temperatures (HWiNFO shared memory) ------------------------------------
+// HWiNFO publishes all sensor readings to the named mapping
+// "Global\HWiNFO_SENS_SM2" when "Shared Memory Support" is enabled. We read
+// the temperature readings (type == 1) without any driver of our own.
+
+#[derive(Serialize, Clone)]
+struct TempSensor {
+    label: String,
+    value: f64,
+    min: f64,
+    max: f64,
+}
+
+#[derive(Serialize)]
+struct Temperatures {
+    /// True if HWiNFO's shared memory is present (HWiNFO running w/ SHM).
+    available: bool,
+    sensors: Vec<TempSensor>,
+}
+
+#[cfg(windows)]
+fn read_hwinfo_temps() -> Temperatures {
+    use std::ffi::OsStr;
+    use std::iter::once;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Memory::{
+        MapViewOfFile, OpenFileMappingW, UnmapViewOfFile, FILE_MAP_READ,
+    };
+
+    let mut out = Temperatures {
+        available: false,
+        sensors: Vec::new(),
+    };
+    let name: Vec<u16> = OsStr::new("Global\\HWiNFO_SENS_SM2")
+        .encode_wide()
+        .chain(once(0))
+        .collect();
+
+    unsafe {
+        let handle = OpenFileMappingW(FILE_MAP_READ, 0, name.as_ptr());
+        if handle.is_null() {
+            return out; // HWiNFO not running with shared memory
+        }
+        let view = MapViewOfFile(handle, FILE_MAP_READ, 0, 0, 0);
+        if view.Value.is_null() {
+            CloseHandle(handle);
+            return out;
+        }
+        // The mapping exists, so HWiNFO is publishing.
+        out.available = true;
+        let base = view.Value as *const u8;
+
+        let rd_u32 = |off: usize| -> u32 {
+            let mut b = [0u8; 4];
+            std::ptr::copy_nonoverlapping(base.add(off), b.as_mut_ptr(), 4);
+            u32::from_le_bytes(b)
+        };
+        let rd_f64 = |off: usize| -> f64 {
+            let mut b = [0u8; 8];
+            std::ptr::copy_nonoverlapping(base.add(off), b.as_mut_ptr(), 8);
+            f64::from_le_bytes(b)
+        };
+        let rd_cstr = |off: usize, max: usize| -> String {
+            let mut v = Vec::new();
+            for i in 0..max {
+                let c = *base.add(off + i);
+                if c == 0 {
+                    break;
+                }
+                v.push(c);
+            }
+            String::from_utf8_lossy(&v).into_owned()
+        };
+
+        // Header (see HWiNFO SDK): reading-section layout at fixed offsets.
+        let offset_reading = rd_u32(36) as usize;
+        let size_reading = rd_u32(40) as usize;
+        let num_reading = rd_u32(44) as usize;
+
+        // Sanity-gate the geometry before walking the section.
+        if (200..2000).contains(&size_reading) && num_reading < 100_000 {
+            for i in 0..num_reading {
+                let b = offset_reading + i * size_reading;
+                if rd_u32(b) != 1 {
+                    continue; // 1 == SENSOR_TYPE_TEMP
+                }
+                let user = rd_cstr(b + 140, 128);
+                let orig = rd_cstr(b + 12, 128);
+                let label = if user.is_empty() { orig } else { user };
+                let value = rd_f64(b + 288);
+                if !value.is_finite() || !(-50.0..=200.0).contains(&value) {
+                    continue;
+                }
+                out.sensors.push(TempSensor {
+                    label,
+                    value,
+                    min: rd_f64(b + 296),
+                    max: rd_f64(b + 304),
+                });
+            }
+        }
+
+        UnmapViewOfFile(view);
+        CloseHandle(handle);
+    }
+    out
+}
+
+#[cfg(not(windows))]
+fn read_hwinfo_temps() -> Temperatures {
+    Temperatures {
+        available: false,
+        sensors: Vec::new(),
+    }
+}
+
+/// Session min/max accumulator for point-in-time temps (nvidia-smi / ACPI give
+/// only the current value). Keyed by sensor label.
+fn temp_minmax(label: &str, value: f64) -> (f64, f64) {
+    static CACHE: OnceLock<Mutex<HashMap<String, (f64, f64)>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut m = cache.lock().unwrap();
+    let e = m.entry(label.to_string()).or_insert((value, value));
+    e.0 = e.0.min(value);
+    e.1 = e.1.max(value);
+    *e
+}
+
+/// GPU temperature via `nvidia-smi` (ships with the NVIDIA driver, no admin,
+/// no persistent process — invoked once per poll and exits immediately).
+#[cfg(windows)]
+fn read_nvidia_temps() -> Vec<TempSensor> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    let mut sensors = Vec::new();
+    let output = std::process::Command::new("nvidia-smi")
+        .args(["--query-gpu=name,temperature.gpu", "--format=csv,noheader,nounits"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+
+    if let Ok(o) = output {
+        if o.status.success() {
+            let text = String::from_utf8_lossy(&o.stdout);
+            for line in text.lines() {
+                let parts: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
+                if parts.len() < 2 {
+                    continue;
+                }
+                let Ok(temp) = parts[1].parse::<f64>() else {
+                    continue;
+                };
+                let label = format!("GPU: {}", parts[0]);
+                let (min, max) = temp_minmax(&label, temp);
+                sensors.push(TempSensor {
+                    label,
+                    value: temp,
+                    min,
+                    max,
+                });
+            }
+        }
+    }
+    sensors
+}
+
+#[cfg(not(windows))]
+fn read_nvidia_temps() -> Vec<TempSensor> {
+    Vec::new()
+}
+
+/// CPU/board temperature via WMI `MSAcpi_ThermalZoneTemperature`. This works
+/// only when perf-diag runs elevated (admin); otherwise the query is denied
+/// and we return nothing. Coarse ACPI thermal zones, not per-core sensors.
+#[cfg(windows)]
+fn read_acpi_temps(conn: Option<&wmi::WMIConnection>) -> Vec<TempSensor> {
+    use serde::Deserialize;
+
+    #[derive(Deserialize)]
+    #[serde(rename = "MSAcpi_ThermalZoneTemperature")]
+    #[serde(rename_all = "PascalCase")]
+    struct Zone {
+        instance_name: String,
+        current_temperature: u32,
+    }
+
+    let Some(conn) = conn else {
+        return Vec::new();
+    };
+    let rows: Vec<Zone> = match conn.query() {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+
+    rows.into_iter()
+        .filter_map(|z| {
+            // CurrentTemperature is in tenths of a Kelvin.
+            let c = z.current_temperature as f64 / 10.0 - 273.15;
+            if !(-50.0..=200.0).contains(&c) {
+                return None;
+            }
+            let c = (c * 10.0).round() / 10.0;
+            let zone = z
+                .instance_name
+                .rsplit('\\')
+                .next()
+                .unwrap_or(&z.instance_name)
+                .to_string();
+            let label = format!("CPU/ACPI: {zone}");
+            let (min, max) = temp_minmax(&label, c);
+            Some(TempSensor {
+                label,
+                value: c,
+                min,
+                max,
+            })
+        })
+        .collect()
+}
+
+/// Combined temperatures: GPU (via nvidia-smi) + CPU/board (cached ACPI reading
+/// from the sampler, present only when elevated) + HWiNFO sensors if available.
+#[tauri::command]
+fn get_temperatures(state: State<'_, Arc<Shared>>) -> Temperatures {
+    let mut out = read_hwinfo_temps();
+    let acpi = state.cpu_temp.read().map(|v| v.clone()).unwrap_or_default();
+    let gpu = read_nvidia_temps();
+    if !acpi.is_empty() || !gpu.is_empty() {
+        out.available = true;
+    }
+    out.sensors.extend(acpi);
+    out.sensors.extend(gpu);
+    out
+}
+
 // --- privacy / sensor access (Windows ConsentStore) -------------------------
 
 #[derive(Serialize, Clone)]
@@ -751,7 +1008,8 @@ pub fn run() {
             get_app_details,
             get_blocks,
             add_block,
-            remove_block
+            remove_block,
+            get_temperatures
         ])
         .setup(|app| {
             // Database lives in the app's local data directory.
@@ -773,6 +1031,7 @@ pub fn run() {
                 db: Mutex::new(conn),
                 latest: RwLock::new(initial),
                 blocks: RwLock::new(block_set),
+                cpu_temp: RwLock::new(Vec::new()),
             });
 
             let worker = shared.clone();
