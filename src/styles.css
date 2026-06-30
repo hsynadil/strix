@@ -239,6 +239,43 @@ button.kill:hover { color: var(--hot); border-color: var(--hot); background: rgb
 .tp-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tp-val { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 
+/* Privacy view --------------------------------------------------------- */
+.privacy-banner {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+.privacy-banner.clear { color: var(--green); background: rgba(63, 185, 80, 0.06); }
+.privacy-banner.alert { color: var(--hot); background: rgba(248, 81, 73, 0.08); font-weight: 600; }
+.alert-item { display: flex; align-items: center; gap: 8px; }
+.alert-item strong { color: var(--text); }
+.pulse {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--hot);
+  box-shadow: 0 0 0 0 rgba(248, 81, 73, 0.6);
+  animation: pulse 1.4s infinite;
+}
+@keyframes pulse {
+  0% { box-shadow: 0 0 0 0 rgba(248, 81, 73, 0.55); }
+  70% { box-shadow: 0 0 0 8px rgba(248, 81, 73, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(248, 81, 73, 0); }
+}
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.badge.live { color: var(--hot); background: rgba(248, 81, 73, 0.12); }
+.badge.idle { color: var(--muted); background: rgba(139, 148, 158, 0.12); }
+
 /* Scrollbar ------------------------------------------------------------ */
 ::-webkit-scrollbar { width: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 5px; }

@@ -337,6 +337,101 @@ fn get_top_at(ts: i64, state: State<'_, Arc<Shared>>) -> Result<Vec<TopProc>, St
         .map_err(|e| e.to_string())
 }
 
+// --- privacy / sensor access (Windows ConsentStore) -------------------------
+
+#[derive(Serialize, Clone)]
+struct SensorAccess {
+    /// "webcam" | "microphone" | "location"
+    capability: String,
+    /// Readable app name (exe filename or package family name).
+    app: String,
+    /// Full exe path or package id.
+    path: String,
+    /// Unix seconds of the last time the app started using the sensor.
+    last_used: i64,
+    /// True if the app is using the sensor right now (stop time not yet set).
+    in_use: bool,
+}
+
+/// Windows FILETIME (100ns ticks since 1601) -> unix seconds.
+fn filetime_to_unix(ft: u64) -> i64 {
+    if ft == 0 {
+        return 0;
+    }
+    (ft / 10_000_000) as i64 - 11_644_473_600
+}
+
+/// NonPackaged keys encode the exe path with '#' instead of '\\'.
+fn nonpackaged_name(raw: &str) -> (String, String) {
+    let path = raw.replace('#', "\\");
+    let app = path.rsplit('\\').next().unwrap_or(&path).to_string();
+    (app, path)
+}
+
+fn push_access(
+    key: &winreg::RegKey,
+    cap: &str,
+    raw: &str,
+    nonpackaged: bool,
+    out: &mut Vec<SensorAccess>,
+) {
+    let start: u64 = key.get_value("LastUsedTimeStart").unwrap_or(0);
+    let stop: u64 = key.get_value("LastUsedTimeStop").unwrap_or(0);
+    if start == 0 && stop == 0 {
+        return; // no usage recorded
+    }
+    let (app, path) = if nonpackaged {
+        nonpackaged_name(raw)
+    } else {
+        (raw.split('_').next().unwrap_or(raw).to_string(), raw.to_string())
+    };
+    out.push(SensorAccess {
+        capability: cap.to_string(),
+        app,
+        path,
+        last_used: filetime_to_unix(start),
+        in_use: stop == 0 && start != 0,
+    });
+}
+
+fn read_consent_for(hive: winreg::HKEY, cap: &str, out: &mut Vec<SensorAccess>) {
+    let root = winreg::RegKey::predef(hive);
+    let path = format!(
+        "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\{cap}"
+    );
+    let Ok(cap_key) = root.open_subkey(&path) else {
+        return;
+    };
+    for sub in cap_key.enum_keys().flatten() {
+        if sub.eq_ignore_ascii_case("NonPackaged") {
+            if let Ok(np) = cap_key.open_subkey("NonPackaged") {
+                for app_raw in np.enum_keys().flatten() {
+                    if let Ok(k) = np.open_subkey(&app_raw) {
+                        push_access(&k, cap, &app_raw, true, out);
+                    }
+                }
+            }
+        } else if let Ok(k) = cap_key.open_subkey(&sub) {
+            push_access(&k, cap, &sub, false, out);
+        }
+    }
+}
+
+/// Which apps have used the camera / microphone / location, and which are
+/// using them right now. Read from the Windows ConsentStore registry.
+#[tauri::command]
+fn get_sensor_access() -> Vec<SensorAccess> {
+    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    let mut out = Vec::new();
+    for cap in ["webcam", "microphone", "location"] {
+        read_consent_for(HKEY_CURRENT_USER, cap, &mut out);
+        read_consent_for(HKEY_LOCAL_MACHINE, cap, &mut out);
+    }
+    // Active sensors first, then most recently used.
+    out.sort_by(|a, b| b.in_use.cmp(&a.in_use).then(b.last_used.cmp(&a.last_used)));
+    out
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -346,7 +441,8 @@ pub fn run() {
             kill_process,
             get_history_window,
             get_history,
-            get_top_at
+            get_top_at,
+            get_sensor_access
         ])
         .setup(|app| {
             // Database lives in the app's local data directory.

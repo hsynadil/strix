@@ -39,6 +39,7 @@
       <nav class="tabs">
         <button class="tab active" data-view="live">Live</button>
         <button class="tab" data-view="history">History</button>
+        <button class="tab" data-view="privacy">Privacy</button>
       </nav>
     </header>
 
@@ -110,6 +111,24 @@
           <ol id="top-list"></ol>
         </aside>
       </div>
+    </section>
+
+    <!-- Privacy view -->
+    <section id="privacy-view" class="view" hidden>
+      <div id="privacy-banner" class="privacy-banner"></div>
+      <main class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Sensor</th>
+              <th>App</th>
+              <th class="num">Last used</th>
+              <th>State</th>
+            </tr>
+          </thead>
+          <tbody id="sensor-rows"></tbody>
+        </table>
+      </main>
     </section>
   </body>
 </html>

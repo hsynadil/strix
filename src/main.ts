@@ -417,7 +417,8 @@ interface TopProc {
   memory: number;
 }
 
-let currentView: "live" | "history" = "live";
+type View = "live" | "history" | "privacy";
+let currentView: View = "live";
 let rangeSecs = 1800;
 let histData: MetricPoint[] = [];
 let histTimer: number | undefined;
@@ -568,18 +569,107 @@ function stopHistTimer() {
   histTimer = undefined;
 }
 
-function switchView(view: "live" | "history") {
+// --- privacy / sensor access ------------------------------------------------
+
+interface SensorAccess {
+  capability: string;
+  app: string;
+  path: string;
+  last_used: number;
+  in_use: boolean;
+}
+
+let privacyTimer: number | undefined;
+
+const SENSOR_META: Record<string, { icon: string; label: string }> = {
+  webcam: { icon: "📷", label: "Camera" },
+  microphone: { icon: "🎤", label: "Microphone" },
+  location: { icon: "📍", label: "Location" },
+};
+
+function fmtAgo(unix: number): string {
+  if (unix <= 0) return "—";
+  const sec = Math.floor(Date.now() / 1000) - unix;
+  if (sec < 0) return "just now";
+  if (sec < 60) return `${sec}s ago`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+  if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
+  return `${Math.floor(sec / 86400)}d ago`;
+}
+
+function renderPrivacy(list: SensorAccess[]) {
+  const active = list.filter((s) => s.in_use);
+  const banner = byId("privacy-banner");
+  if (active.length) {
+    banner.className = "privacy-banner alert";
+    banner.innerHTML = active
+      .map((s) => {
+        const m = SENSOR_META[s.capability] ?? { icon: "●", label: s.capability };
+        return `<div class="alert-item"><span class="pulse"></span>${m.icon} ${m.label} in use — <strong>${s.app}</strong></div>`;
+      })
+      .join("");
+  } else {
+    banner.className = "privacy-banner clear";
+    banner.innerHTML = `<div class="alert-item">✓ No camera, microphone, or location access right now</div>`;
+  }
+
+  byId("sensor-rows").innerHTML = list
+    .map((s) => {
+      const m = SENSOR_META[s.capability] ?? { icon: "●", label: s.capability };
+      const state = s.in_use
+        ? `<span class="badge live">● in use</span>`
+        : `<span class="badge idle">idle</span>`;
+      return `<tr>
+        <td>${m.icon} ${m.label}</td>
+        <td class="name" title="${s.path}">${s.app}</td>
+        <td class="num muted">${fmtAgo(s.last_used)}</td>
+        <td>${state}</td>
+      </tr>`;
+    })
+    .join("");
+}
+
+async function loadPrivacy() {
+  try {
+    const list = await invoke<SensorAccess[]>("get_sensor_access");
+    renderPrivacy(list);
+  } catch (e) {
+    byId("privacy-banner").className = "privacy-banner";
+    byId("privacy-banner").textContent = `Error: ${e}`;
+  }
+}
+
+function startPrivacyTimer() {
+  stopPrivacyTimer();
+  privacyTimer = window.setInterval(loadPrivacy, 2000);
+}
+
+function stopPrivacyTimer() {
+  if (privacyTimer !== undefined) clearInterval(privacyTimer);
+  privacyTimer = undefined;
+}
+
+function switchView(view: View) {
   currentView = view;
   byId("live-view").hidden = view !== "live";
   byId("history-view").hidden = view !== "history";
+  byId("privacy-view").hidden = view !== "privacy";
   document.querySelectorAll(".tab").forEach((t) => {
     t.classList.toggle("active", (t as HTMLElement).dataset.view === view);
   });
+
   if (view === "history") {
     loadHistory();
     startHistTimer();
   } else {
     stopHistTimer();
+  }
+
+  if (view === "privacy") {
+    loadPrivacy();
+    startPrivacyTimer();
+  } else {
+    stopPrivacyTimer();
   }
 }
 
@@ -640,7 +730,7 @@ window.addEventListener("DOMContentLoaded", () => {
 
   // Tab switching.
   document.querySelectorAll(".tab").forEach((t) => {
-    t.addEventListener("click", () => switchView((t as HTMLElement).dataset.view as "live" | "history"));
+    t.addEventListener("click", () => switchView((t as HTMLElement).dataset.view as View));
   });
 
   // History range buttons.
