@@ -1,4 +1,4 @@
-// perf-diag — Tauri backend
+// Strix — Tauri backend
 //
 // A background thread samples the system every SAMPLE_SECS, caches the latest
 // snapshot (so `get_snapshot` is cheap) and persists metrics + the heaviest
@@ -836,7 +836,7 @@ fn read_nvidia_temps() -> Vec<TempSensor> {
 }
 
 /// CPU/board temperature via WMI `MSAcpi_ThermalZoneTemperature`. This works
-/// only when perf-diag runs elevated (admin); otherwise the query is denied
+/// only when Strix runs elevated (admin); otherwise the query is denied
 /// and we return nothing. Coarse ACPI thermal zones, not per-core sensors.
 #[cfg(windows)]
 fn read_acpi_temps(conn: Option<&wmi::WMIConnection>) -> Vec<TempSensor> {
@@ -1007,7 +1007,7 @@ fn reveal_main(app: &tauri::AppHandle) {
 
 // --- elevation --------------------------------------------------------------
 
-/// Relaunch perf-diag elevated (UAC) so the WMI ACPI temperature query works,
+/// Relaunch Strix elevated (UAC) so the WMI ACPI temperature query works,
 /// then exit this non-elevated instance.
 #[tauri::command]
 fn restart_as_admin(app: tauri::AppHandle) -> Result<(), String> {
@@ -1069,7 +1069,7 @@ pub fn run() {
             // Database lives in the app's local data directory.
             let dir = app.path().app_local_data_dir()?;
             std::fs::create_dir_all(&dir)?;
-            let conn = Connection::open(dir.join("perf-diag.db"))?;
+            let conn = Connection::open(dir.join("strix.db"))?;
             init_db(&conn)?;
             let block_set = load_blocks(&conn).unwrap_or_default();
 

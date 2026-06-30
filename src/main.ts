@@ -57,7 +57,7 @@ let latest: ProcInfo[] = [];
 
 // --- persisted settings (webview localStorage) ------------------------------
 
-const SETTINGS_KEY = "perf-diag.settings";
+const SETTINGS_KEY = "strix.settings";
 
 function loadSettings() {
   try {
