@@ -4,6 +4,7 @@
 // snapshot (so `get_snapshot` is cheap) and persists metrics + the heaviest
 // processes to SQLite with a rolling retention window, powering the timeline.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -24,6 +25,20 @@ struct Shared {
     users: Users,
     db: Mutex<Connection>,
     latest: RwLock<Snapshot>,
+    blocks: RwLock<BlockSet>,
+}
+
+/// In-memory blocklist (lowercased) for fast enforcement in the sampler.
+#[derive(Default)]
+struct BlockSet {
+    exes: HashSet<String>,
+    publishers: HashSet<String>,
+}
+
+impl BlockSet {
+    fn is_empty(&self) -> bool {
+        self.exes.is_empty() && self.publishers.is_empty()
+    }
 }
 
 // --- serializable payloads --------------------------------------------------
@@ -171,8 +186,63 @@ fn init_db(conn: &Connection) -> rusqlite::Result<()> {
             cpu     REAL    NOT NULL,
             memory  INTEGER NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_top_ts ON top_procs(ts);",
+        CREATE INDEX IF NOT EXISTS idx_top_ts ON top_procs(ts);
+        CREATE TABLE IF NOT EXISTS blocklist (
+            kind    TEXT NOT NULL,
+            value   TEXT NOT NULL,
+            PRIMARY KEY (kind, value)
+        );",
     )
+}
+
+fn load_blocks(conn: &Connection) -> rusqlite::Result<BlockSet> {
+    let mut bs = BlockSet::default();
+    let mut stmt = conn.prepare("SELECT kind, value FROM blocklist")?;
+    let rows = stmt.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (kind, value) = row?;
+        match kind.as_str() {
+            "exe" => {
+                bs.exes.insert(value.to_lowercase());
+            }
+            "publisher" => {
+                bs.publishers.insert(value.to_lowercase());
+            }
+            _ => {}
+        }
+    }
+    Ok(bs)
+}
+
+/// Kill any running process whose exe name or publisher is on the blocklist.
+/// Publisher lookups are cached by exe path to avoid re-reading version info.
+fn enforce_blocks(sys: &System, blocks: &BlockSet, pub_cache: &mut HashMap<String, String>) {
+    if blocks.is_empty() {
+        return;
+    }
+    for (_pid, p) in sys.processes() {
+        let name = p.name().to_string_lossy().to_lowercase();
+        let mut blocked = blocks.exes.contains(&name);
+
+        if !blocked && !blocks.publishers.is_empty() {
+            if let Some(exe) = p.exe() {
+                let key = exe.to_string_lossy().to_string();
+                let company = pub_cache
+                    .entry(key)
+                    .or_insert_with(|| read_version_info(&exe.to_string_lossy()).company)
+                    .clone();
+                if !company.is_empty() && blocks.publishers.contains(&company.to_lowercase()) {
+                    blocked = true;
+                }
+            }
+        }
+
+        if blocked {
+            let _ = p.kill();
+        }
+    }
 }
 
 /// Persist one sample: the system metrics row plus the heaviest processes.
@@ -206,12 +276,17 @@ fn prune(conn: &Connection, cutoff: i64) {
 /// Background sampling loop. Runs for the lifetime of the app.
 fn sampler_loop(shared: Arc<Shared>) {
     let mut tick: u32 = 0;
+    let mut pub_cache: HashMap<String, String> = HashMap::new();
     loop {
         std::thread::sleep(Duration::from_secs(SAMPLE_SECS));
 
         let snap = {
             let mut sys = shared.sys.lock().unwrap();
-            build_snapshot(&mut sys, &shared.users)
+            let s = build_snapshot(&mut sys, &shared.users);
+            if let Ok(blocks) = shared.blocks.read() {
+                enforce_blocks(&sys, &blocks, &mut pub_cache);
+            }
+            s
         };
 
         if let Ok(mut latest) = shared.latest.write() {
@@ -339,6 +414,94 @@ fn get_top_at(ts: i64, state: State<'_, Arc<Shared>>) -> Result<Vec<TopProc>, St
 
 // --- app details ------------------------------------------------------------
 
+#[derive(Serialize, Default)]
+struct VersionInfo {
+    company: String,
+    product: String,
+    description: String,
+    version: String,
+}
+
+/// Read CompanyName / ProductName / FileDescription / FileVersion from an exe's
+/// version resource via the Windows version.dll APIs.
+#[cfg(windows)]
+fn read_version_info(path: &str) -> VersionInfo {
+    use std::ffi::{c_void, OsStr};
+    use std::iter::once;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
+    };
+
+    let mut out = VersionInfo::default();
+    if path.is_empty() {
+        return out;
+    }
+    let wide: Vec<u16> = OsStr::new(path).encode_wide().chain(once(0)).collect();
+
+    unsafe {
+        let mut handle = 0u32;
+        let size = GetFileVersionInfoSizeW(wide.as_ptr(), &mut handle);
+        if size == 0 {
+            return out;
+        }
+        let mut buf = vec![0u8; size as usize];
+        if GetFileVersionInfoW(wide.as_ptr(), 0, size, buf.as_mut_ptr() as *mut c_void) == 0 {
+            return out;
+        }
+
+        // Determine the language/codepage of the string table.
+        let (mut lang, mut cp) = (0x0409u16, 0x04b0u16);
+        let tr_key: Vec<u16> = OsStr::new("\\VarFileInfo\\Translation")
+            .encode_wide()
+            .chain(once(0))
+            .collect();
+        let mut tr_ptr: *mut c_void = std::ptr::null_mut();
+        let mut tr_len = 0u32;
+        if VerQueryValueW(
+            buf.as_ptr() as *const c_void,
+            tr_key.as_ptr(),
+            &mut tr_ptr,
+            &mut tr_len,
+        ) != 0
+            && tr_len >= 4
+            && !tr_ptr.is_null()
+        {
+            let arr = std::slice::from_raw_parts(tr_ptr as *const u16, 2);
+            lang = arr[0];
+            cp = arr[1];
+        }
+
+        let query = |field: &str| -> String {
+            let sub = format!("\\StringFileInfo\\{:04x}{:04x}\\{}", lang, cp, field);
+            let subw: Vec<u16> = OsStr::new(&sub).encode_wide().chain(once(0)).collect();
+            let mut p: *mut c_void = std::ptr::null_mut();
+            let mut l = 0u32;
+            if VerQueryValueW(buf.as_ptr() as *const c_void, subw.as_ptr(), &mut p, &mut l) != 0
+                && l > 0
+                && !p.is_null()
+            {
+                let s = std::slice::from_raw_parts(p as *const u16, l as usize);
+                let end = s.iter().position(|&c| c == 0).unwrap_or(s.len());
+                String::from_utf16_lossy(&s[..end])
+            } else {
+                String::new()
+            }
+        };
+
+        out.company = query("CompanyName");
+        out.product = query("ProductName");
+        out.description = query("FileDescription");
+        out.version = query("FileVersion");
+    }
+    out
+}
+
+#[cfg(not(windows))]
+fn read_version_info(_path: &str) -> VersionInfo {
+    VersionInfo::default()
+}
+
 #[derive(Serialize)]
 struct AppDetails {
     pid: u32,
@@ -356,6 +519,7 @@ struct AppDetails {
     cpu: f32,
     disk_read: u64,
     disk_write: u64,
+    version_info: VersionInfo,
 }
 
 /// Rich, on-demand detail for a single process (read from the cached System).
@@ -378,11 +542,13 @@ fn get_app_details(pid: u32, state: State<'_, Arc<Shared>>) -> Result<AppDetails
         .map(|u| u.name().to_string())
         .unwrap_or_default();
     let disk = p.disk_usage();
+    let exe = p.exe().map(|e| e.to_string_lossy().to_string()).unwrap_or_default();
+    let version_info = read_version_info(&exe);
 
     Ok(AppDetails {
         pid,
         name: p.name().to_string_lossy().to_string(),
-        exe: p.exe().map(|e| e.to_string_lossy().to_string()).unwrap_or_default(),
+        exe,
         cmd: p
             .cmd()
             .iter()
@@ -400,7 +566,80 @@ fn get_app_details(pid: u32, state: State<'_, Arc<Shared>>) -> Result<AppDetails
         cpu: p.cpu_usage() / cpu_count,
         disk_read: disk.read_bytes,
         disk_write: disk.written_bytes,
+        version_info,
     })
+}
+
+// --- blocklist (block / permanently disable apps) ---------------------------
+
+#[derive(Serialize)]
+struct Block {
+    kind: String,
+    value: String,
+}
+
+#[tauri::command]
+fn get_blocks(state: State<'_, Arc<Shared>>) -> Result<Vec<Block>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT kind, value FROM blocklist ORDER BY kind, value")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(Block {
+                kind: r.get(0)?,
+                value: r.get(1)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn add_block(kind: String, value: String, state: State<'_, Arc<Shared>>) -> Result<(), String> {
+    if kind != "exe" && kind != "publisher" {
+        return Err("kind must be 'exe' or 'publisher'".into());
+    }
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        return Err("value is empty".into());
+    }
+    {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT OR IGNORE INTO blocklist (kind, value) VALUES (?1, ?2)",
+            params![kind, value],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    let mut bs = state.blocks.write().map_err(|e| e.to_string())?;
+    if kind == "exe" {
+        bs.exes.insert(value.to_lowercase());
+    } else {
+        bs.publishers.insert(value.to_lowercase());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn remove_block(kind: String, value: String, state: State<'_, Arc<Shared>>) -> Result<(), String> {
+    {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM blocklist WHERE kind = ?1 AND value = ?2",
+            params![kind, value],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    let mut bs = state.blocks.write().map_err(|e| e.to_string())?;
+    let lower = value.to_lowercase();
+    if kind == "exe" {
+        bs.exes.remove(&lower);
+    } else {
+        bs.publishers.remove(&lower);
+    }
+    Ok(())
 }
 
 // --- privacy / sensor access (Windows ConsentStore) -------------------------
@@ -509,7 +748,10 @@ pub fn run() {
             get_history,
             get_top_at,
             get_sensor_access,
-            get_app_details
+            get_app_details,
+            get_blocks,
+            add_block,
+            remove_block
         ])
         .setup(|app| {
             // Database lives in the app's local data directory.
@@ -517,6 +759,7 @@ pub fn run() {
             std::fs::create_dir_all(&dir)?;
             let conn = Connection::open(dir.join("perf-diag.db"))?;
             init_db(&conn)?;
+            let block_set = load_blocks(&conn).unwrap_or_default();
 
             let mut sys = System::new_all();
             sys.refresh_cpu_usage();
@@ -529,6 +772,7 @@ pub fn run() {
                 users,
                 db: Mutex::new(conn),
                 latest: RwLock::new(initial),
+                blocks: RwLock::new(block_set),
             });
 
             let worker = shared.clone();

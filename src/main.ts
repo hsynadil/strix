@@ -692,9 +692,80 @@ interface AppDetails {
   cpu: number;
   disk_read: number;
   disk_write: number;
+  version_info: {
+    company: string;
+    product: string;
+    description: string;
+    version: string;
+  };
+}
+
+interface Block {
+  kind: "exe" | "publisher";
+  value: string;
 }
 
 let detailPid: number | null = null;
+let detailName = "";
+let detailCompany = "";
+let blockCache: Block[] = [];
+
+async function loadBlocks(): Promise<Block[]> {
+  blockCache = await invoke<Block[]>("get_blocks");
+  return blockCache;
+}
+
+function isBlocked(kind: "exe" | "publisher", value: string): boolean {
+  const v = value.toLowerCase();
+  return blockCache.some((b) => b.kind === kind && b.value.toLowerCase() === v);
+}
+
+async function toggleBlock(kind: "exe" | "publisher", value: string) {
+  if (!value) return;
+  if (isBlocked(kind, value)) {
+    await invoke("remove_block", { kind, value });
+  } else {
+    const label = kind === "exe" ? `app "${value}"` : `publisher "${value}"`;
+    if (!confirm(`Block ${label}?\n\nEvery matching process will be terminated automatically while running.`)) {
+      return;
+    }
+    await invoke("add_block", { kind, value });
+  }
+  await loadBlocks();
+  refreshBlockButtons();
+  byId("blocked-btn").textContent = `⛔ Blocked${blockCache.length ? " " + blockCache.length : ""}`;
+}
+
+function refreshBlockButtons() {
+  const appBtn = byId<HTMLButtonElement>("md-block-app");
+  appBtn.textContent = isBlocked("exe", detailName) ? "Unblock app" : "Block app";
+
+  const pubBtn = byId<HTMLButtonElement>("md-block-pub");
+  if (detailCompany) {
+    pubBtn.hidden = false;
+    pubBtn.textContent = isBlocked("publisher", detailCompany) ? "Unblock publisher" : "Block publisher";
+  } else {
+    pubBtn.hidden = true;
+  }
+}
+
+async function openBlocklist() {
+  await loadBlocks();
+  const list = byId("bm-list");
+  if (blockCache.length === 0) {
+    list.innerHTML = `<li class="bm-empty">Nothing blocked yet.</li>`;
+  } else {
+    list.innerHTML = blockCache
+      .map(
+        (b) =>
+          `<li><span class="bm-kind">${b.kind === "exe" ? "App" : "Publisher"}</span>` +
+          `<span class="bm-val">${esc(b.value)}</span>` +
+          `<button class="bm-remove" data-kind="${b.kind}" data-value="${esc(b.value)}" title="Remove">✕</button></li>`,
+      )
+      .join("");
+  }
+  byId("block-modal").hidden = false;
+}
 
 // Plain-language descriptions for common Windows processes & popular apps.
 const DESCRIPTIONS: Record<string, string> = {
@@ -747,10 +818,17 @@ async function openDetails(pid: number) {
   try {
     const d = await invoke<AppDetails>("get_app_details", { pid });
     detailPid = pid;
+    detailName = d.name;
+    const vi = d.version_info;
+    detailCompany = vi.company;
     byId("md-name").textContent = `${d.name} · PID ${d.pid}`;
-    byId("md-desc").textContent = describe(d.name);
+    byId("md-desc").textContent =
+      DESCRIPTIONS[d.name.toLowerCase()] || vi.description || describe(d.name);
     const started = d.start_time > 0 ? new Date(d.start_time * 1000).toLocaleString() : "—";
     const rows: [string, string][] = [
+      ["Publisher", vi.company || "—"],
+      ["Product", vi.product || "—"],
+      ["File version", vi.version || "—"],
       ["Executable", d.exe || "—"],
       ["Command line", d.cmd || "—"],
       ["Working dir", d.cwd || "—"],
@@ -766,6 +844,8 @@ async function openDetails(pid: number) {
     byId("md-grid").innerHTML = rows
       .map(([k, v]) => `<dt>${k}</dt><dd title="${esc(v)}">${esc(v)}</dd>`)
       .join("");
+    await loadBlocks();
+    refreshBlockButtons();
     byId("modal").hidden = false;
   } catch (e) {
     byId("status").textContent = `Details failed: ${e}`;
@@ -882,9 +962,33 @@ window.addEventListener("DOMContentLoaded", () => {
     if (detailPid != null) killProcess(detailPid);
     closeDetails();
   });
-  window.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && !byId("modal").hidden) closeDetails();
+  byId("md-block-app").addEventListener("click", () => toggleBlock("exe", detailName));
+  byId("md-block-pub").addEventListener("click", () => toggleBlock("publisher", detailCompany));
+
+  // Blocklist management modal.
+  const updateBlockedCount = () => {
+    byId("blocked-btn").textContent = `⛔ Blocked${blockCache.length ? " " + blockCache.length : ""}`;
+  };
+  byId("blocked-btn").addEventListener("click", openBlocklist);
+  byId("bm-close").addEventListener("click", () => (byId("block-modal").hidden = true));
+  byId("block-modal").addEventListener("click", (e) => {
+    if (e.target === byId("block-modal")) byId("block-modal").hidden = true;
   });
+  byId("bm-list").addEventListener("click", async (e) => {
+    const btn = (e.target as HTMLElement).closest("button.bm-remove") as HTMLElement | null;
+    if (!btn) return;
+    await invoke("remove_block", { kind: btn.dataset.kind, value: btn.dataset.value });
+    await openBlocklist();
+    updateBlockedCount();
+  });
+
+  window.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    if (!byId("block-modal").hidden) byId("block-modal").hidden = true;
+    else if (!byId("modal").hidden) closeDetails();
+  });
+
+  loadBlocks().then(updateBlockedCount);
 
   updateSortHeaders();
   poll();

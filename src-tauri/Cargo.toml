@@ -26,3 +26,6 @@ sysinfo = "0.33"
 rusqlite = { version = "0.32", features = ["bundled"] }
 winreg = "0.52"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
+

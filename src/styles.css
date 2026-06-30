@@ -313,7 +313,30 @@ button.kill:hover { color: var(--hot); border-color: var(--hot); background: rgb
   word-break: break-all;
   font-variant-numeric: tabular-nums;
 }
-.modal-foot { margin-top: 18px; display: flex; justify-content: flex-end; }
+.modal-foot { margin-top: 18px; display: flex; justify-content: flex-end; gap: 8px; }
+
+.block-list { list-style: none; margin: 4px 0 0; padding: 0; }
+.block-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid rgba(35, 42, 52, 0.5);
+  font-size: 12px;
+}
+.bm-empty { color: var(--muted); }
+.bm-kind { width: 64px; color: var(--muted); text-transform: uppercase; font-size: 10px; letter-spacing: 0.5px; }
+.bm-val { flex: 1; word-break: break-all; }
+.bm-remove {
+  width: 22px;
+  height: 22px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.bm-remove:hover { color: var(--hot); border-color: var(--hot); background: rgba(248, 81, 73, 0.1); }
 .danger {
   padding: 7px 16px;
   background: rgba(248, 81, 73, 0.12);

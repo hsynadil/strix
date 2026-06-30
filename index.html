@@ -57,6 +57,7 @@
           </select>
         </label>
         <button id="group-btn" class="ghost" title="Group processes by application">▤ Group</button>
+        <button id="blocked-btn" class="ghost" title="Manage blocked apps">⛔ Blocked</button>
         <button id="pause-btn" class="ghost" title="Pause / resume live updates">⏸ Pause</button>
         <span class="hint" id="status">Loading…</span>
       </div>
@@ -141,8 +142,24 @@
         <p id="md-desc" class="md-desc"></p>
         <dl class="md-grid" id="md-grid"></dl>
         <div class="modal-foot">
+          <button id="md-block-pub" class="ghost" hidden></button>
+          <button id="md-block-app" class="ghost"></button>
           <button id="md-kill" class="danger">End task</button>
         </div>
+      </div>
+    </div>
+
+    <!-- Blocklist modal -->
+    <div id="block-modal" class="modal" hidden>
+      <div class="modal-card">
+        <div class="modal-head">
+          <h2>Blocked apps &amp; publishers</h2>
+          <button id="bm-close" class="ghost" title="Close">✕</button>
+        </div>
+        <p class="md-desc">
+          These are terminated automatically every couple of seconds while running.
+        </p>
+        <ul id="bm-list" class="block-list"></ul>
       </div>
     </div>
   </body>
