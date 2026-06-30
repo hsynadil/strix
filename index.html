@@ -41,6 +41,7 @@
         <button class="tab" data-view="history">History</button>
         <button class="tab" data-view="privacy">Privacy</button>
         <button class="tab" data-view="temps">Temps</button>
+        <button id="settings-btn" class="icon-tab" title="Settings">⚙</button>
       </nav>
     </header>
 
@@ -135,6 +136,10 @@
 
     <!-- Temps view -->
     <section id="temps-view" class="view" hidden>
+      <div id="admin-bar" class="admin-bar" hidden>
+        <span>CPU/board temperature needs administrator rights (WMI sensor access).</span>
+        <button id="admin-btn" class="ghost">⚡ Restart as administrator</button>
+      </div>
       <div id="temps-empty" class="temps-empty" hidden>
         <h2>No temperature source found</h2>
         <p>
@@ -182,6 +187,24 @@
           <button id="md-block-app" class="ghost"></button>
           <button id="md-kill" class="danger">End task</button>
         </div>
+      </div>
+    </div>
+
+    <!-- Settings modal -->
+    <div id="settings-modal" class="modal" hidden>
+      <div class="modal-card">
+        <div class="modal-head">
+          <h2>Settings</h2>
+          <button id="set-close" class="ghost" title="Close">✕</button>
+        </div>
+        <label class="set-row">
+          <input type="checkbox" id="set-autostart" />
+          <span>Launch perf-diag when Windows starts</span>
+        </label>
+        <p class="md-desc">
+          Closing the window keeps perf-diag running in the system tray so history
+          keeps recording. Right-click the tray icon to quit.
+        </p>
       </div>
     </div>
 

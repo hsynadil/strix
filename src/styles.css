@@ -189,6 +189,26 @@ button.kill:hover { color: var(--hot); border-color: var(--hot); background: rgb
 }
 .tab:hover { color: var(--text); }
 .tab.active { color: var(--accent); border-color: var(--accent); background: rgba(68, 147, 248, 0.08); }
+.icon-tab {
+  padding: 6px 10px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+}
+.icon-tab:hover { color: var(--text); border-color: var(--accent); }
+
+.set-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  cursor: pointer;
+  margin: 6px 0 12px;
+}
+.set-row input { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
 
 /* History view --------------------------------------------------------- */
 .ranges { display: flex; gap: 4px; }
@@ -304,6 +324,17 @@ button.kill:hover { color: var(--hot); border-color: var(--hot); background: rgb
 .ts-big.hot { color: var(--hot); }
 .ts-sub { color: var(--muted); font-size: 12px; }
 .temps-note { color: var(--muted); font-size: 11px; margin: 0 0 6px; padding: 0 16px; }
+.admin-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  background: rgba(217, 164, 65, 0.1);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--warm);
+}
+.admin-bar button { margin-left: auto; }
 .temps-empty code {
   background: var(--bg);
   border: 1px solid var(--border);

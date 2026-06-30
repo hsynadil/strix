@@ -994,10 +994,63 @@ fn get_sensor_access() -> Vec<SensorAccess> {
     out
 }
 
+// --- window / tray helpers --------------------------------------------------
+
+/// Show, unminimize and focus the main window (from tray actions).
+fn reveal_main(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+}
+
+// --- elevation --------------------------------------------------------------
+
+/// Relaunch perf-diag elevated (UAC) so the WMI ACPI temperature query works,
+/// then exit this non-elevated instance.
+#[tauri::command]
+fn restart_as_admin(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use std::ffi::OsStr;
+        use std::iter::once;
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::UI::Shell::ShellExecuteW;
+
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let exe_w: Vec<u16> = exe.as_os_str().encode_wide().chain(once(0)).collect();
+        let verb: Vec<u16> = OsStr::new("runas").encode_wide().chain(once(0)).collect();
+
+        let result = unsafe {
+            ShellExecuteW(
+                std::ptr::null_mut(),
+                verb.as_ptr(),
+                exe_w.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                1, // SW_SHOWNORMAL
+            )
+        };
+        // ShellExecute returns a value > 32 on success.
+        if (result as isize) <= 32 {
+            return Err("Elevation was cancelled or failed".into());
+        }
+        app.exit(0);
+    }
+    #[cfg(not(windows))]
+    let _ = app;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .invoke_handler(tauri::generate_handler![
             get_snapshot,
             kill_process,
@@ -1009,7 +1062,8 @@ pub fn run() {
             get_blocks,
             add_block,
             remove_block,
-            get_temperatures
+            get_temperatures,
+            restart_as_admin
         ])
         .setup(|app| {
             // Database lives in the app's local data directory.
@@ -1038,6 +1092,50 @@ pub fn run() {
             std::thread::spawn(move || sampler_loop(worker));
 
             app.manage(shared);
+
+            // System tray with Show / Quit, left-click to restore.
+            {
+                use tauri::menu::{Menu, MenuItem};
+                use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+                let show = MenuItem::with_id(app, "show", "Show perf-diag", true, None::<&str>)?;
+                let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+                let menu = Menu::with_items(app, &[&show, &quit])?;
+
+                let _tray = TrayIconBuilder::new()
+                    .icon(app.default_window_icon().unwrap().clone())
+                    .tooltip("perf-diag")
+                    .menu(&menu)
+                    .show_menu_on_left_click(false)
+                    .on_menu_event(|app, event| match event.id.as_ref() {
+                        "show" => reveal_main(app),
+                        "quit" => app.exit(0),
+                        _ => {}
+                    })
+                    .on_tray_icon_event(|tray, event| {
+                        if let TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } = event
+                        {
+                            reveal_main(tray.app_handle());
+                        }
+                    })
+                    .build(app)?;
+            }
+
+            // Closing the window hides it to the tray instead of quitting.
+            if let Some(win) = app.get_webview_window("main") {
+                let w = win.clone();
+                win.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = w.hide();
+                    }
+                });
+            }
+
             Ok(())
         })
         .run(tauri::generate_context!())

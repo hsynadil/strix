@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
 
 interface ProcInfo {
   pid: number;
@@ -53,6 +54,29 @@ let paused = false;
 let groupBy = false;
 const expanded = new Set<string>();
 let latest: ProcInfo[] = [];
+
+// --- persisted settings (webview localStorage) ------------------------------
+
+const SETTINGS_KEY = "perf-diag.settings";
+
+function loadSettings() {
+  try {
+    const s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
+    if (typeof s.pollMs === "number") pollMs = s.pollMs;
+    if (typeof s.groupBy === "boolean") groupBy = s.groupBy;
+    if (typeof s.sortKey === "string") sortKey = s.sortKey;
+    if (s.sortDir === "asc" || s.sortDir === "desc") sortDir = s.sortDir;
+  } catch {
+    /* ignore malformed settings */
+  }
+}
+
+function saveSettings() {
+  localStorage.setItem(
+    SETTINGS_KEY,
+    JSON.stringify({ pollMs, groupBy, sortKey, sortDir }),
+  );
+}
 
 const cpuHist: number[] = [];
 const memHist: number[] = [];
@@ -671,6 +695,9 @@ function tempClass(v: number): string {
 }
 
 function renderTemps(t: Temperatures) {
+  const hasCpu = t.sensors.some((s) => s.label.startsWith("CPU/ACPI"));
+  byId("admin-bar").hidden = hasCpu;
+
   const empty = byId("temps-empty");
   const content = byId("temps-content");
   if (!t.available) {
@@ -938,6 +965,10 @@ function closeDetails() {
 // --- wiring -----------------------------------------------------------------
 
 window.addEventListener("DOMContentLoaded", () => {
+  loadSettings();
+  $<HTMLSelectElement>("#rate").value = String(pollMs);
+  $("#group-btn").classList.toggle("active", groupBy);
+
   document.querySelectorAll("th.sortable").forEach((th) => {
     th.addEventListener("click", () => {
       const key = (th as HTMLElement).dataset.key as SortKey;
@@ -949,6 +980,7 @@ window.addEventListener("DOMContentLoaded", () => {
       }
       updateSortHeaders();
       render();
+      saveSettings();
     });
   });
 
@@ -960,12 +992,14 @@ window.addEventListener("DOMContentLoaded", () => {
   $<HTMLSelectElement>("#rate").addEventListener("change", (e) => {
     pollMs = Number((e.target as HTMLSelectElement).value);
     restartPolling();
+    saveSettings();
   });
 
   $("#group-btn").addEventListener("click", () => {
     groupBy = !groupBy;
     $("#group-btn").classList.toggle("active", groupBy);
     render();
+    saveSettings();
   });
 
   $("#pause-btn").addEventListener("click", () => {
@@ -1021,6 +1055,37 @@ window.addEventListener("DOMContentLoaded", () => {
     if (currentView === "history") drawCharts(cursorIdx);
   });
 
+  byId("admin-btn").addEventListener("click", async () => {
+    try {
+      await invoke("restart_as_admin");
+    } catch (e) {
+      alert(`Could not elevate: ${e}`);
+    }
+  });
+
+  // Settings modal (autostart).
+  byId("settings-btn").addEventListener("click", async () => {
+    try {
+      byId<HTMLInputElement>("set-autostart").checked = await isEnabled();
+    } catch {
+      /* plugin unavailable */
+    }
+    byId("settings-modal").hidden = false;
+  });
+  byId("set-close").addEventListener("click", () => (byId("settings-modal").hidden = true));
+  byId("settings-modal").addEventListener("click", (e) => {
+    if (e.target === byId("settings-modal")) byId("settings-modal").hidden = true;
+  });
+  byId<HTMLInputElement>("set-autostart").addEventListener("change", async (e) => {
+    const on = (e.target as HTMLInputElement).checked;
+    try {
+      if (on) await enable();
+      else await disable();
+    } catch (err) {
+      alert(`Autostart change failed: ${err}`);
+    }
+  });
+
   // App Details: right-click or double-click a process row.
   const openFromEvent = (e: Event) => {
     const tr = (e.target as HTMLElement).closest("tr") as HTMLElement | null;
@@ -1062,7 +1127,8 @@ window.addEventListener("DOMContentLoaded", () => {
 
   window.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
-    if (!byId("block-modal").hidden) byId("block-modal").hidden = true;
+    if (!byId("settings-modal").hidden) byId("settings-modal").hidden = true;
+    else if (!byId("block-modal").hidden) byId("block-modal").hidden = true;
     else if (!byId("modal").hidden) closeDetails();
   });
 
