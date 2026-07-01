@@ -77,6 +77,35 @@ Detect and alert on camera / microphone / location access.
 - [ ] Performance pass — keep RAM well under AppControl's ~150MB
 - [ ] App icon / branding
 
+## Phase 8 — Requested features (v0.3+)
+
+### Quick wins (small, mostly UI)
+- [ ] Hide the "Restart as administrator" bar when Strix is **already elevated**
+      (add an `is_elevated` check instead of keying off "no CPU sensor")
+- [ ] Remove the long HWiNFO explanation block in the Temps empty-state
+- [ ] **Click a point on a History chart to pin it** (stays until clicked again),
+      instead of only showing on hover
+- [ ] Default refresh interval → **2 s**
+- [ ] **Group the Temps list** by device (CPU / GPU / Motherboard)
+
+### Medium
+- [ ] **New app icon / branding** (owl theme) — generate icon set via `tauri icon`
+- [ ] **Auto-update from GitHub Releases** — check latest tag, notify, one-click update.
+      Full in-app install needs `tauri-plugin-updater` + a signed release manifest;
+      a simpler first cut is "update available → open the release page".
+- [ ] **Per-app GPU usage** via PDH `GPU Engine` counters (Task-Manager style);
+      on multi-GPU systems attribute usage to the right adapter (LUID in the counter)
+- [ ] **OSD overlay** — a transparent, always-on-top, click-through Tauri window
+      showing CPU/GPU temp + usage. Works for windowed/borderless apps; true
+      exclusive-fullscreen games can't be overlaid by a normal window.
+
+### Hard / research
+- [ ] **Per-app network usage** — mapping bytes to a PID needs ETW (kernel network
+      provider); `GetExtendedTcpTable` only maps *connections* to PIDs, not bandwidth
+- [ ] **Open browser tabs by name** — only the *active* tab title is readily available
+      (window title). Listing *all* tabs needs per-browser hooks (DevTools protocol /
+      UI Automation / an extension) and is fragile — scope carefully.
+
 ---
 
 ## Tech notes & risks
