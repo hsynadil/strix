@@ -44,7 +44,7 @@ type DisplayRow =
 
 // --- state ------------------------------------------------------------------
 
-let pollMs = 1500;
+let pollMs = 2000;
 let pollTimer: number | undefined;
 
 let sortKey: SortKey = "cpu";
@@ -449,6 +449,7 @@ let rangeSecs = 1800;
 let histData: MetricPoint[] = [];
 let histTimer: number | undefined;
 let cursorIdx: number | null = null;
+let pinnedIdx: number | null = null;
 let hovering = false;
 let lastTopTs = -1;
 
@@ -573,22 +574,42 @@ async function showTopAt(idx: number) {
   }
 }
 
-function onChartHover(clientX: number) {
+function idxFromClientX(clientX: number): number | null {
   const ref = document.getElementById("chart-cpu") as HTMLCanvasElement | null;
-  if (!ref || histData.length < 2) return;
+  if (!ref || histData.length < 2) return null;
   const rect = ref.getBoundingClientRect();
   const frac = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
-  const idx = Math.round(frac * (histData.length - 1));
-  if (idx === cursorIdx) return;
+  return Math.round(frac * (histData.length - 1));
+}
+
+function onChartHover(clientX: number) {
+  // While a point is pinned, the cursor stays locked to it — ignore hover.
+  if (pinnedIdx !== null) return;
+  const idx = idxFromClientX(clientX);
+  if (idx === null || idx === cursorIdx) return;
   cursorIdx = idx;
   drawCharts(idx);
   showTopAt(idx);
 }
 
+// Click to lock a point in place; click it again (or the same spot) to unlock.
+function onChartClick(clientX: number) {
+  const idx = idxFromClientX(clientX);
+  if (idx === null) return;
+  if (pinnedIdx === idx) {
+    pinnedIdx = null; // unpin; hover takes over again
+  } else {
+    pinnedIdx = idx;
+    cursorIdx = idx;
+    drawCharts(idx);
+    showTopAt(idx);
+  }
+}
+
 function startHistTimer() {
   stopHistTimer();
   histTimer = window.setInterval(() => {
-    if (!hovering) loadHistory();
+    if (!hovering && pinnedIdx === null) loadHistory();
   }, 5000);
 }
 
@@ -693,15 +714,13 @@ interface Temperatures {
 }
 
 let tempsTimer: number | undefined;
+let elevated = false;
 
 function tempClass(v: number): string {
   return v >= 85 ? "hot" : v >= 70 ? "warm" : "";
 }
 
 function renderTemps(t: Temperatures) {
-  const hasCpu = t.sensors.some((s) => /cpu|intel|amd|ryzen/i.test(s.label));
-  byId("admin-bar").hidden = hasCpu;
-
   const empty = byId("temps-empty");
   const content = byId("temps-content");
   if (!t.available) {
@@ -721,21 +740,34 @@ function renderTemps(t: Temperatures) {
       `<span class="ts-sub">hottest of ${temps.length} sensors${extra}</span>`
     : `<span class="ts-sub">Connected, but no temperature sensors were reported.</span>`;
 
-  byId("temp-rows").innerHTML = t.sensors
-    .map((s) => {
+  // Group sensors by device (the text before " - ").
+  const groups = new Map<string, TempSensor[]>();
+  for (const s of t.sensors) {
+    const dev = s.label.includes(" - ") ? s.label.split(" - ")[0] : "Other";
+    const arr = groups.get(dev);
+    if (arr) arr.push(s);
+    else groups.set(dev, [s]);
+  }
+
+  let html = "";
+  for (const [dev, list] of groups) {
+    html += `<tr class="tgroup"><td class="name" colspan="4">${esc(dev)}</td></tr>`;
+    for (const s of list) {
       const isFan = s.kind === "fan";
+      const short = s.label.includes(" - ") ? s.label.slice(s.label.indexOf(" - ") + 3) : s.label;
       const cur = isFan ? `${Math.round(s.value)} RPM` : `${s.value.toFixed(1)}°C`;
       const curCls = isFan ? "num muted" : `num ${tempClass(s.value)}`;
       const mn = isFan ? `${Math.round(s.min)}` : `${s.min.toFixed(1)}°`;
       const mx = isFan ? `${Math.round(s.max)}` : `${s.max.toFixed(1)}°`;
-      return `<tr>
-          <td class="name" title="${esc(s.label)}">${esc(s.label)}</td>
+      html += `<tr>
+          <td class="name child" title="${esc(s.label)}">${esc(short)}</td>
           <td class="${curCls}">${cur}</td>
           <td class="num muted">${mn}</td>
           <td class="num muted">${mx}</td>
         </tr>`;
-    })
-    .join("");
+    }
+  }
+  byId("temp-rows").innerHTML = html;
 }
 
 async function loadTemps() {
@@ -1047,6 +1079,7 @@ window.addEventListener("DOMContentLoaded", () => {
     rangeSecs = Number(btn.dataset.secs);
     byId("ranges").querySelectorAll("button").forEach((b) => b.classList.toggle("active", b === btn));
     cursorIdx = null;
+    pinnedIdx = null;
     loadHistory();
   });
 
@@ -1058,30 +1091,32 @@ window.addEventListener("DOMContentLoaded", () => {
   });
   charts.addEventListener("mouseleave", () => {
     hovering = false;
-    cursorIdx = null;
-    drawCharts(null);
+    cursorIdx = pinnedIdx;
+    drawCharts(cursorIdx);
+    if (pinnedIdx !== null) showTopAt(pinnedIdx);
   });
+  charts.addEventListener("click", (e) => onChartClick((e as MouseEvent).clientX));
 
   window.addEventListener("resize", () => {
     if (currentView === "history") drawCharts(cursorIdx);
   });
 
-  byId("admin-btn").addEventListener("click", async () => {
-    try {
-      await invoke("restart_as_admin");
-    } catch (e) {
-      alert(`Could not elevate: ${e}`);
-    }
-  });
-
-  // Settings modal (autostart).
+  // Settings modal (autostart + elevate).
   byId("settings-btn").addEventListener("click", async () => {
     try {
       byId<HTMLInputElement>("set-autostart").checked = await isEnabled();
     } catch {
       /* plugin unavailable */
     }
+    byId("set-admin-row").hidden = elevated; // only offer elevate when not admin
     byId("settings-modal").hidden = false;
+  });
+  byId("set-admin").addEventListener("click", async () => {
+    try {
+      await invoke("restart_as_admin");
+    } catch (e) {
+      alert(`Could not elevate: ${e}`);
+    }
   });
   byId("set-close").addEventListener("click", () => (byId("settings-modal").hidden = true));
   byId("settings-modal").addEventListener("click", (e) => {
@@ -1144,6 +1179,7 @@ window.addEventListener("DOMContentLoaded", () => {
   });
 
   loadBlocks().then(updateBlockedCount);
+  invoke<boolean>("is_elevated").then((v) => { elevated = v; }).catch(() => {});
 
   updateSortHeaders();
   poll();

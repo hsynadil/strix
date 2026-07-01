@@ -328,8 +328,10 @@ fn sampler_loop(shared: Arc<Shared>) {
         #[cfg(windows)]
         {
             let acpi = read_acpi_temps(wmi_thermal.as_ref());
-            if let Ok(mut slot) = shared.cpu_temp.write() {
-                *slot = acpi;
+            if !acpi.is_empty() {
+                if let Ok(mut slot) = shared.cpu_temp.write() {
+                    *slot = acpi;
+                }
             }
 
             // The LHM helper is heavier (~1s: driver + enumeration), so poll it
@@ -337,8 +339,13 @@ fn sampler_loop(shared: Arc<Shared>) {
             if let Some(helper) = &shared.helper_path {
                 if lhm_tick % 3 == 0 {
                     let lhm = read_lhm_temps(helper);
-                    if let Ok(mut slot) = shared.lhm_temp.write() {
-                        *slot = lhm;
+                    // Keep the last non-empty reading so a transient empty result
+                    // (e.g. an Optimus dGPU briefly powering down) doesn't blank
+                    // the Temps view.
+                    if !lhm.is_empty() {
+                        if let Ok(mut slot) = shared.lhm_temp.write() {
+                            *slot = lhm;
+                        }
                     }
                 }
                 lhm_tick = lhm_tick.wrapping_add(1);
@@ -1151,6 +1158,37 @@ fn restart_as_admin(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether Strix is currently running with administrator rights.
+#[tauri::command]
+fn is_elevated() -> bool {
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+        use windows_sys::Win32::Security::{
+            GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+        };
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+        let mut token: HANDLE = std::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return false;
+        }
+        let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
+        let mut size = 0u32;
+        let ok = GetTokenInformation(
+            token,
+            TokenElevation,
+            &mut elevation as *mut _ as *mut _,
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut size,
+        );
+        CloseHandle(token);
+        ok != 0 && elevation.TokenIsElevated != 0
+    }
+    #[cfg(not(windows))]
+    false
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1171,7 +1209,8 @@ pub fn run() {
             add_block,
             remove_block,
             get_temperatures,
-            restart_as_admin
+            restart_as_admin,
+            is_elevated
         ])
         .setup(|app| {
             // Database lives in the app's local data directory.
@@ -1182,15 +1221,27 @@ pub fn run() {
             let block_set = load_blocks(&conn).unwrap_or_default();
 
             // Locate the bundled LibreHardwareMonitor helper (best-effort).
-            let helper_path = app.path().resource_dir().ok().and_then(|base| {
-                [
-                    base.join("resources").join("sensors").join("strix-sensors.exe"),
-                    base.join("sensors").join("strix-sensors.exe"),
-                    base.join("strix-sensors.exe"),
-                ]
-                .into_iter()
-                .find(|p| p.exists())
-            });
+            let helper_path = app
+                .path()
+                .resource_dir()
+                .ok()
+                .and_then(|base| {
+                    [
+                        base.join("resources").join("sensors").join("strix-sensors.exe"),
+                        base.join("sensors").join("strix-sensors.exe"),
+                        base.join("strix-sensors.exe"),
+                    ]
+                    .into_iter()
+                    .find(|p| p.exists())
+                })
+                .or_else(|| {
+                    // Dev fallback: the source-tree resources folder.
+                    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                        .join("resources")
+                        .join("sensors")
+                        .join("strix-sensors.exe");
+                    dev.exists().then_some(dev)
+                });
 
             let mut sys = System::new_all();
             sys.refresh_cpu_usage();

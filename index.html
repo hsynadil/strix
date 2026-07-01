@@ -53,8 +53,8 @@
           Refresh
           <select id="rate">
             <option value="1000">1s</option>
-            <option value="1500" selected>1.5s</option>
-            <option value="2000">2s</option>
+            <option value="1500">1.5s</option>
+            <option value="2000" selected>2s</option>
             <option value="5000">5s</option>
           </select>
         </label>
@@ -140,28 +140,11 @@
 
     <!-- Temps view -->
     <section id="temps-view" class="view" hidden>
-      <div id="admin-bar" class="admin-bar" hidden>
-        <span>CPU/board temperature needs administrator rights (WMI sensor access).</span>
-        <button id="admin-btn" class="ghost">⚡ Restart as administrator</button>
-      </div>
       <div id="temps-empty" class="temps-empty" hidden>
-        <h2>No temperature source found</h2>
-        <p>
-          <strong>GPU temperature</strong> is read automatically from the NVIDIA driver
-          (<code>nvidia-smi</code>) — this needs an NVIDIA GPU with its driver installed.
-        </p>
-        <p>
-          <strong>CPU temperature</strong> needs a kernel-level sensor driver, which Windows
-          won't expose to a normal app. To see it, run <strong>HWiNFO64</strong> with
-          <em>Settings → Shared Memory Support</em> enabled and Strix will read from it.
-        </p>
+        <p>No temperatures available — run as administrator (Settings ⚙) to read CPU &amp; board sensors.</p>
       </div>
       <div id="temps-content" class="temps-content" hidden>
         <div id="temps-summary" class="temps-summary"></div>
-        <p class="temps-note">
-          GPU works without admin. Real per-core CPU &amp; board temps appear when Strix runs as
-          administrator (via the bundled LibreHardwareMonitor engine).
-        </p>
         <main class="table-wrap">
           <table>
             <thead>
@@ -206,6 +189,10 @@
           <input type="checkbox" id="set-autostart" />
           <span>Launch Strix when Windows starts</span>
         </label>
+        <div id="set-admin-row" class="set-row" hidden>
+          <button id="set-admin" class="ghost">⚡ Restart as administrator</button>
+          <span class="set-hint">unlocks CPU &amp; board temperatures</span>
+        </div>
         <p class="md-desc">
           Closing the window keeps Strix running in the system tray so history
           keeps recording. Right-click the tray icon to quit.
