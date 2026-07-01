@@ -103,6 +103,7 @@ struct MetricPoint {
     mem_total: u64,
     disk_read: u64,
     disk_write: u64,
+    temp: f32,
 }
 
 #[derive(Serialize)]
@@ -186,7 +187,8 @@ fn init_db(conn: &Connection) -> rusqlite::Result<()> {
             mem_used    INTEGER NOT NULL,
             mem_total   INTEGER NOT NULL,
             disk_read   INTEGER NOT NULL,
-            disk_write  INTEGER NOT NULL
+            disk_write  INTEGER NOT NULL,
+            temp        REAL    NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS top_procs (
             ts      INTEGER NOT NULL,
@@ -200,7 +202,10 @@ fn init_db(conn: &Connection) -> rusqlite::Result<()> {
             value   TEXT NOT NULL,
             PRIMARY KEY (kind, value)
         );",
-    )
+    )?;
+    // Migrate DBs created before the temp column existed (errors if present).
+    let _ = conn.execute("ALTER TABLE metrics ADD COLUMN temp REAL NOT NULL DEFAULT 0", []);
+    Ok(())
 }
 
 fn load_blocks(conn: &Connection) -> rusqlite::Result<BlockSet> {
@@ -254,7 +259,7 @@ fn enforce_blocks(sys: &System, blocks: &BlockSet, pub_cache: &mut HashMap<Strin
 }
 
 /// Persist one sample: the system metrics row plus the heaviest processes.
-fn persist_sample(conn: &Connection, ts: i64, snap: &Snapshot) -> rusqlite::Result<()> {
+fn persist_sample(conn: &Connection, ts: i64, snap: &Snapshot, cpu_temp: f64) -> rusqlite::Result<()> {
     let s = &snap.summary;
     let (disk_read, disk_write) = snap
         .processes
@@ -262,9 +267,9 @@ fn persist_sample(conn: &Connection, ts: i64, snap: &Snapshot) -> rusqlite::Resu
         .fold((0u64, 0u64), |(r, w), p| (r + p.disk_read, w + p.disk_write));
 
     conn.execute(
-        "INSERT OR REPLACE INTO metrics (ts, cpu, mem_used, mem_total, disk_read, disk_write)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![ts, s.cpu, s.mem_used, s.mem_total, disk_read, disk_write],
+        "INSERT OR REPLACE INTO metrics (ts, cpu, mem_used, mem_total, disk_read, disk_write, temp)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![ts, s.cpu, s.mem_used, s.mem_total, disk_read, disk_write, cpu_temp],
     )?;
 
     for p in snap.processes.iter().take(TOP_N) {
@@ -274,6 +279,17 @@ fn persist_sample(conn: &Connection, ts: i64, snap: &Snapshot) -> rusqlite::Resu
         )?;
     }
     Ok(())
+}
+
+/// Pick a representative CPU temperature for the timeline: prefer a "package"
+/// sensor, else any CPU-labelled sensor.
+fn pick_cpu_temp(sensors: &[TempSensor]) -> Option<f64> {
+    let is = |s: &TempSensor, kw: &str| s.kind == "temp" && s.label.to_lowercase().contains(kw);
+    sensors
+        .iter()
+        .find(|s| is(s, "package"))
+        .or_else(|| sensors.iter().find(|s| is(s, "cpu")))
+        .map(|s| s.value)
 }
 
 fn prune(conn: &Connection, cutoff: i64) {
@@ -333,9 +349,17 @@ fn sampler_loop(shared: Arc<Shared>) {
             *latest = snap.clone();
         }
 
+        // Representative CPU temp for the timeline (LHM preferred, else ACPI).
+        let cpu_temp_val = {
+            let from_lhm = shared.lhm_temp.read().ok().and_then(|v| pick_cpu_temp(&v));
+            from_lhm
+                .or_else(|| shared.cpu_temp.read().ok().and_then(|v| pick_cpu_temp(&v)))
+                .unwrap_or(0.0)
+        };
+
         let ts = now_ts();
         if let Ok(conn) = shared.db.lock() {
-            let _ = persist_sample(&conn, ts, &snap);
+            let _ = persist_sample(&conn, ts, &snap, cpu_temp_val);
             tick = tick.wrapping_add(1);
             if tick % PRUNE_EVERY == 0 {
                 prune(&conn, ts - RETENTION_SECS);
@@ -394,7 +418,7 @@ fn get_history(
         .prepare(
             "SELECT (ts / ?1) * ?1 AS bucket,
                     AVG(cpu), AVG(mem_used), MAX(mem_total),
-                    AVG(disk_read), AVG(disk_write)
+                    AVG(disk_read), AVG(disk_write), AVG(temp)
              FROM metrics
              WHERE ts BETWEEN ?2 AND ?3
              GROUP BY bucket
@@ -411,6 +435,7 @@ fn get_history(
                 mem_total: r.get::<_, i64>(3)? as u64,
                 disk_read: r.get::<_, f64>(4)? as u64,
                 disk_write: r.get::<_, f64>(5)? as u64,
+                temp: r.get::<_, f64>(6)? as f32,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -693,6 +718,8 @@ struct TempSensor {
     value: f64,
     min: f64,
     max: f64,
+    /// "temp" (°C) or "fan" (RPM).
+    kind: String,
 }
 
 #[derive(Serialize)]
@@ -781,6 +808,7 @@ fn read_hwinfo_temps() -> Temperatures {
                     value,
                     min: rd_f64(b + 296),
                     max: rd_f64(b + 304),
+                    kind: "temp".to_string(),
                 });
             }
         }
@@ -842,6 +870,7 @@ fn read_nvidia_temps() -> Vec<TempSensor> {
                     value: temp,
                     min,
                     max,
+                    kind: "temp".to_string(),
                 });
             }
         }
@@ -898,6 +927,7 @@ fn read_acpi_temps(conn: Option<&wmi::WMIConnection>) -> Vec<TempSensor> {
                 value: c,
                 min,
                 max,
+                kind: "temp".to_string(),
             })
         })
         .collect()
@@ -912,6 +942,11 @@ fn read_lhm_temps(helper: &Path) -> Vec<TempSensor> {
     struct Raw {
         label: String,
         value: f64,
+        #[serde(default = "default_kind")]
+        kind: String,
+    }
+    fn default_kind() -> String {
+        "temp".to_string()
     }
 
     let mut cmd = std::process::Command::new(helper);
@@ -927,7 +962,14 @@ fn read_lhm_temps(helper: &Path) -> Vec<TempSensor> {
 
     let raws: Vec<Raw> = serde_json::from_slice(&output.stdout).unwrap_or_default();
     raws.into_iter()
-        .filter(|r| r.value.is_finite() && (-50.0..=200.0).contains(&r.value))
+        .filter(|r| {
+            r.value.is_finite()
+                && if r.kind == "fan" {
+                    (0.0..=100_000.0).contains(&r.value)
+                } else {
+                    (-50.0..=200.0).contains(&r.value)
+                }
+        })
         .map(|r| {
             let (min, max) = temp_minmax(&r.label, r.value);
             TempSensor {
@@ -935,6 +977,7 @@ fn read_lhm_temps(helper: &Path) -> Vec<TempSensor> {
                 value: r.value,
                 min,
                 max,
+                kind: r.kind,
             }
         })
         .collect()

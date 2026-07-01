@@ -48,18 +48,31 @@ namespace StrixSensors
         {
             foreach (ISensor s in hw.Sensors)
             {
-                if (s.SensorType != SensorType.Temperature) continue;
+                string kind;
+                if (s.SensorType == SensorType.Temperature)
+                {
+                    // "Distance to TjMax" is a delta below the throttle point, not
+                    // a real temperature — skip it.
+                    if (s.Name.IndexOf("Distance to TjMax", StringComparison.OrdinalIgnoreCase) >= 0)
+                        continue;
+                    kind = "temp";
+                }
+                else if (s.SensorType == SensorType.Fan)
+                {
+                    kind = "fan";
+                }
+                else continue;
+
                 if (!s.Value.HasValue) continue;
-                // "Distance to TjMax" is a delta below the throttle point, not a
-                // real temperature — skip it.
-                if (s.Name.IndexOf("Distance to TjMax", StringComparison.OrdinalIgnoreCase) >= 0)
-                    continue;
                 double v = (double)s.Value.Value;
-                if (v < -50.0 || v > 200.0) continue;
+                if (kind == "temp") { if (v < -50.0 || v > 200.0) continue; }
+                else { if (v < 0.0 || v > 100000.0) continue; }
+
                 string label = hw.Name + " - " + s.Name;
                 outp.Add(
                     "{\"label\":\"" + Esc(label) + "\",\"value\":" +
-                    v.ToString("0.0", CultureInfo.InvariantCulture) + "}");
+                    v.ToString("0.0", CultureInfo.InvariantCulture) +
+                    ",\"kind\":\"" + kind + "\"}");
             }
             foreach (IHardware sub in hw.SubHardware) Collect(sub, outp);
         }

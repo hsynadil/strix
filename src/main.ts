@@ -427,6 +427,7 @@ interface MetricPoint {
   mem_total: number;
   disk_read: number;
   disk_write: number;
+  temp: number;
 }
 
 interface HistoryWindow {
@@ -546,14 +547,16 @@ function drawCharts(cursor: number | null) {
   drawSeriesChart("chart-cpu", histData, (p) => p.cpu, 100, "#4493f8", cursor);
   drawSeriesChart("chart-mem", histData, (p) => p.mem_used, memMax, "#3fb950", cursor);
   drawSeriesChart("chart-disk", histData, (p) => p.disk_read + p.disk_write, diskMax, "#d9a441", cursor);
+  drawSeriesChart("chart-temp", histData, (p) => p.temp, 100, "#f85149", cursor);
 }
 
 async function showTopAt(idx: number) {
   const p = histData[idx];
   if (!p) return;
   byId("top-title").textContent = new Date(p.ts * 1000).toLocaleString();
+  const tempStr = p.temp > 0 ? ` · ${p.temp.toFixed(0)}°C` : "";
   byId("top-sub").textContent =
-    `CPU ${p.cpu.toFixed(1)}% · RAM ${fmtBytes(p.mem_used)} · Disk ${fmtRate(p.disk_read + p.disk_write)}`;
+    `CPU ${p.cpu.toFixed(1)}% · RAM ${fmtBytes(p.mem_used)} · Disk ${fmtRate(p.disk_read + p.disk_write)}${tempStr}`;
   if (p.ts === lastTopTs) return;
   lastTopTs = p.ts;
   try {
@@ -681,6 +684,7 @@ interface TempSensor {
   value: number;
   min: number;
   max: number;
+  kind: string; // "temp" (°C) or "fan" (RPM)
 }
 
 interface Temperatures {
@@ -708,22 +712,29 @@ function renderTemps(t: Temperatures) {
   empty.hidden = true;
   content.hidden = false;
 
-  const hottest = t.sensors.reduce((m, s) => (s.value > m ? s.value : m), 0);
-  byId("temps-summary").innerHTML = t.sensors.length
+  const temps = t.sensors.filter((s) => s.kind !== "fan");
+  const fanCount = t.sensors.length - temps.length;
+  const hottest = temps.reduce((m, s) => (s.value > m ? s.value : m), 0);
+  const extra = fanCount ? ` · ${fanCount} fans` : "";
+  byId("temps-summary").innerHTML = temps.length
     ? `<span class="ts-big ${tempClass(hottest)}">${hottest.toFixed(0)}°</span>` +
-      `<span class="ts-sub">hottest of ${t.sensors.length} sensors · via HWiNFO</span>`
-    : `<span class="ts-sub">HWiNFO connected, but no temperature sensors were reported.</span>`;
+      `<span class="ts-sub">hottest of ${temps.length} sensors${extra}</span>`
+    : `<span class="ts-sub">Connected, but no temperature sensors were reported.</span>`;
 
   byId("temp-rows").innerHTML = t.sensors
-    .map(
-      (s) =>
-        `<tr>
+    .map((s) => {
+      const isFan = s.kind === "fan";
+      const cur = isFan ? `${Math.round(s.value)} RPM` : `${s.value.toFixed(1)}°C`;
+      const curCls = isFan ? "num muted" : `num ${tempClass(s.value)}`;
+      const mn = isFan ? `${Math.round(s.min)}` : `${s.min.toFixed(1)}°`;
+      const mx = isFan ? `${Math.round(s.max)}` : `${s.max.toFixed(1)}°`;
+      return `<tr>
           <td class="name" title="${esc(s.label)}">${esc(s.label)}</td>
-          <td class="num ${tempClass(s.value)}">${s.value.toFixed(1)}°C</td>
-          <td class="num muted">${s.min.toFixed(1)}°</td>
-          <td class="num muted">${s.max.toFixed(1)}°</td>
-        </tr>`,
-    )
+          <td class="${curCls}">${cur}</td>
+          <td class="num muted">${mn}</td>
+          <td class="num muted">${mx}</td>
+        </tr>`;
+    })
     .join("");
 }
 
