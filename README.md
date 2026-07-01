@@ -37,8 +37,10 @@ you, in plain language, what each process is.
 
 ### 🌡️ Temperatures
 - **GPU** temperature via `nvidia-smi` (no admin, no background app)
-- **CPU / board** temperature via WMI ACPI thermal zones — one click to *Restart as administrator* unlocks it
-- Optional: if **HWiNFO** runs with Shared Memory enabled, its sensors are merged in too
+- **Real per-core CPU + board** temperatures via a bundled **LibreHardwareMonitor**
+  engine — one click to *Restart as administrator* unlocks it
+- Falls back to WMI ACPI thermal zones or HWiNFO shared memory when the engine
+  isn't available
 
 ### 🧩 App details & control
 - Right-click any process → **App Details**: plain-language description, **publisher**
@@ -90,14 +92,21 @@ in `src-tauri/target/release/bundle/nsis/`.
   and writes metrics + the top processes to SQLite, with a rolling 3-day window.
 - **Privacy** reads `HKCU/HKLM …\CapabilityAccessManager\ConsentStore` and decodes
   the `LastUsedTimeStart/Stop` FILETIME values to detect in-use sensors.
-- **CPU temperature** comes from `MSAcpi_ThermalZoneTemperature` over WMI, which
-  only returns data to an elevated process — hence the *Restart as administrator*
-  button.
+- **CPU temperature** is read by a small bundled helper (`strix-sensors.exe`,
+  source in [`sensor-helper/`](sensor-helper/)) that uses **LibreHardwareMonitor**.
+  Reading the CPU's sensor needs a kernel driver, so it only works when Strix runs
+  elevated — hence the *Restart as administrator* button. A coarse WMI ACPI reading
+  is used as a fallback.
 
 ## Status
 
 Phases 0–5 and 7 of the [roadmap](ROADMAP.md) are complete. Phase 6 (an optional
 MCP server so AI tools can query Strix's data in natural language) is future work.
+
+## Third-party
+
+Strix bundles **LibreHardwareMonitor** (MPL-2.0) and its dependencies to read
+temperatures — see [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
 
 ## License
 

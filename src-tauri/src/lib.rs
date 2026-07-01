@@ -5,6 +5,7 @@
 // processes to SQLite with a rolling retention window, powering the timeline.
 
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -28,6 +29,11 @@ struct Shared {
     blocks: RwLock<BlockSet>,
     /// Latest CPU/board temps from WMI (sampler-populated; empty unless elevated).
     cpu_temp: RwLock<Vec<TempSensor>>,
+    /// Latest temps from the LibreHardwareMonitor helper (real per-core CPU,
+    /// GPU, board), sampler-populated. Primary source when non-empty.
+    lhm_temp: RwLock<Vec<TempSensor>>,
+    /// Path to the bundled strix-sensors.exe helper, if found.
+    helper_path: Option<PathBuf>,
 }
 
 /// In-memory blocklist (lowercased) for fast enforcement in the sampler.
@@ -278,6 +284,7 @@ fn prune(conn: &Connection, cutoff: i64) {
 /// Background sampling loop. Runs for the lifetime of the app.
 fn sampler_loop(shared: Arc<Shared>) {
     let mut tick: u32 = 0;
+    let mut lhm_tick: u32 = 0;
     let mut pub_cache: HashMap<String, String> = HashMap::new();
 
     // WMI connection for ACPI temperatures, set up once on this thread. Works
@@ -307,6 +314,18 @@ fn sampler_loop(shared: Arc<Shared>) {
             let acpi = read_acpi_temps(wmi_thermal.as_ref());
             if let Ok(mut slot) = shared.cpu_temp.write() {
                 *slot = acpi;
+            }
+
+            // The LHM helper is heavier (~1s: driver + enumeration), so poll it
+            // less often than the base sample interval.
+            if let Some(helper) = &shared.helper_path {
+                if lhm_tick % 3 == 0 {
+                    let lhm = read_lhm_temps(helper);
+                    if let Ok(mut slot) = shared.lhm_temp.write() {
+                        *slot = lhm;
+                    }
+                }
+                lhm_tick = lhm_tick.wrapping_add(1);
             }
         }
 
@@ -884,10 +903,56 @@ fn read_acpi_temps(conn: Option<&wmi::WMIConnection>) -> Vec<TempSensor> {
         .collect()
 }
 
-/// Combined temperatures: GPU (via nvidia-smi) + CPU/board (cached ACPI reading
-/// from the sampler, present only when elevated) + HWiNFO sensors if available.
+/// Run the bundled LibreHardwareMonitor helper and parse its JSON output.
+/// Returns real per-core CPU / GPU / board temperatures — the CPU data needs
+/// Strix (and thus this child) to be elevated; otherwise only GPU is reported.
+fn read_lhm_temps(helper: &Path) -> Vec<TempSensor> {
+    use serde::Deserialize;
+    #[derive(Deserialize)]
+    struct Raw {
+        label: String,
+        value: f64,
+    }
+
+    let mut cmd = std::process::Command::new(helper);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let output = match cmd.output() {
+        Ok(o) => o,
+        Err(_) => return Vec::new(),
+    };
+
+    let raws: Vec<Raw> = serde_json::from_slice(&output.stdout).unwrap_or_default();
+    raws.into_iter()
+        .filter(|r| r.value.is_finite() && (-50.0..=200.0).contains(&r.value))
+        .map(|r| {
+            let (min, max) = temp_minmax(&r.label, r.value);
+            TempSensor {
+                label: r.label,
+                value: r.value,
+                min,
+                max,
+            }
+        })
+        .collect()
+}
+
+/// Combined temperatures. Prefers the LibreHardwareMonitor helper (real
+/// per-core CPU + GPU + board); otherwise falls back to HWiNFO shared memory,
+/// the cached ACPI reading (elevated) and nvidia-smi.
 #[tauri::command]
 fn get_temperatures(state: State<'_, Arc<Shared>>) -> Temperatures {
+    let lhm = state.lhm_temp.read().map(|v| v.clone()).unwrap_or_default();
+    if !lhm.is_empty() {
+        return Temperatures {
+            available: true,
+            sensors: lhm,
+        };
+    }
+
     let mut out = read_hwinfo_temps();
     let acpi = state.cpu_temp.read().map(|v| v.clone()).unwrap_or_default();
     let gpu = read_nvidia_temps();
@@ -1073,6 +1138,17 @@ pub fn run() {
             init_db(&conn)?;
             let block_set = load_blocks(&conn).unwrap_or_default();
 
+            // Locate the bundled LibreHardwareMonitor helper (best-effort).
+            let helper_path = app.path().resource_dir().ok().and_then(|base| {
+                [
+                    base.join("resources").join("sensors").join("strix-sensors.exe"),
+                    base.join("sensors").join("strix-sensors.exe"),
+                    base.join("strix-sensors.exe"),
+                ]
+                .into_iter()
+                .find(|p| p.exists())
+            });
+
             let mut sys = System::new_all();
             sys.refresh_cpu_usage();
             sys.refresh_processes(ProcessesToUpdate::All, true);
@@ -1086,6 +1162,8 @@ pub fn run() {
                 latest: RwLock::new(initial),
                 blocks: RwLock::new(block_set),
                 cpu_temp: RwLock::new(Vec::new()),
+                lhm_temp: RwLock::new(Vec::new()),
+                helper_path,
             });
 
             let worker = shared.clone();

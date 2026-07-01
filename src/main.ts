@@ -695,7 +695,7 @@ function tempClass(v: number): string {
 }
 
 function renderTemps(t: Temperatures) {
-  const hasCpu = t.sensors.some((s) => s.label.startsWith("CPU/ACPI"));
+  const hasCpu = t.sensors.some((s) => /cpu|intel|amd|ryzen/i.test(s.label));
   byId("admin-bar").hidden = hasCpu;
 
   const empty = byId("temps-empty");
