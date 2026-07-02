@@ -315,6 +315,18 @@ button.kill:hover { color: var(--hot); border-color: var(--hot); background: rgb
 .temps-empty ol { font-size: 13px; line-height: 1.8; margin: 0; padding-left: 20px; }
 .temps-empty strong { color: var(--text); }
 
+.admin-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 16px;
+  background: rgba(217, 164, 65, 0.12);
+  border-bottom: 1px solid rgba(217, 164, 65, 0.35);
+  color: var(--warm);
+  font-size: 12px;
+}
+.admin-bar button { margin-left: auto; flex: none; }
+
 .temps-content { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .temps-summary {
   display: flex;

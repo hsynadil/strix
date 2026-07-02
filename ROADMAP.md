@@ -79,14 +79,13 @@ Detect and alert on camera / microphone / location access.
 
 ## Phase 8 — Requested features (v0.3+)
 
-### Quick wins (small, mostly UI)
-- [ ] Hide the "Restart as administrator" bar when Strix is **already elevated**
-      (add an `is_elevated` check instead of keying off "no CPU sensor")
-- [ ] Remove the long HWiNFO explanation block in the Temps empty-state
-- [ ] **Click a point on a History chart to pin it** (stays until clicked again),
-      instead of only showing on hover
-- [ ] Default refresh interval → **2 s**
-- [ ] **Group the Temps list** by device (CPU / GPU / Motherboard)
+### Quick wins (small, mostly UI) — ✅ done
+- [x] Hide the "Restart as administrator" bar when Strix is **already elevated**
+      (via an `is_elevated` check)
+- [x] Remove the long HWiNFO explanation block in the Temps empty-state
+- [x] **Click a point on a History chart to pin it** (stays until clicked again)
+- [x] Default refresh interval → **2 s**
+- [x] **Group the Temps list** by device (CPU / GPU / Motherboard)
 
 ### Medium
 - [ ] **New app icon / branding** (owl theme) — generate icon set via `tauri icon`
