@@ -721,17 +721,16 @@ function tempClass(v: number): string {
 }
 
 function renderTemps(t: Temperatures) {
-  const empty = byId("temps-empty");
-  const content = byId("temps-content");
-  if (!t.available) {
-    empty.hidden = false;
-    content.hidden = true;
-    return;
-  }
-  empty.hidden = true;
-  content.hidden = false;
+  // Offer elevation (for CPU/board temps) only when not already admin.
+  byId("temps-admin").hidden = elevated;
 
   const temps = t.sensors.filter((s) => s.kind !== "fan");
+  if (!t.available || t.sensors.length === 0) {
+    byId("temps-summary").innerHTML = `<span class="ts-sub">No temperatures available.</span>`;
+    byId("temp-rows").innerHTML = "";
+    return;
+  }
+
   const fanCount = t.sensors.length - temps.length;
   const hottest = temps.reduce((m, s) => (s.value > m ? s.value : m), 0);
   const extra = fanCount ? ` · ${fanCount} fans` : "";
@@ -774,9 +773,9 @@ async function loadTemps() {
   try {
     const t = await invoke<Temperatures>("get_temperatures");
     renderTemps(t);
-  } catch (e) {
-    byId("temps-empty").hidden = false;
-    byId("temps-content").hidden = true;
+  } catch {
+    byId("temps-summary").innerHTML = `<span class="ts-sub">Couldn't read temperatures.</span>`;
+    byId("temp-rows").innerHTML = "";
   }
 }
 
@@ -1111,13 +1110,15 @@ window.addEventListener("DOMContentLoaded", () => {
     byId("set-admin-row").hidden = elevated; // only offer elevate when not admin
     byId("settings-modal").hidden = false;
   });
-  byId("set-admin").addEventListener("click", async () => {
+  const elevate = async () => {
     try {
       await invoke("restart_as_admin");
     } catch (e) {
       alert(`Could not elevate: ${e}`);
     }
-  });
+  };
+  byId("set-admin").addEventListener("click", elevate);
+  byId("admin-btn").addEventListener("click", elevate);
   byId("set-close").addEventListener("click", () => (byId("settings-modal").hidden = true));
   byId("settings-modal").addEventListener("click", (e) => {
     if (e.target === byId("settings-modal")) byId("settings-modal").hidden = true;

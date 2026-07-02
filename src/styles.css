@@ -15,6 +15,9 @@
 
 * { box-sizing: border-box; }
 
+/* Ensure the `hidden` attribute always wins over display rules below. */
+[hidden] { display: none !important; }
+
 html, body {
   margin: 0;
   height: 100vh;

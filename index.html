@@ -140,10 +140,11 @@
 
     <!-- Temps view -->
     <section id="temps-view" class="view" hidden>
-      <div id="temps-empty" class="temps-empty" hidden>
-        <p>No temperatures available — run as administrator (Settings ⚙) to read CPU &amp; board sensors.</p>
+      <div id="temps-admin" class="admin-bar" hidden>
+        <span>CPU &amp; board temperatures need administrator rights.</span>
+        <button id="admin-btn" class="ghost">⚡ Restart as administrator</button>
       </div>
-      <div id="temps-content" class="temps-content" hidden>
+      <div id="temps-content" class="temps-content">
         <div id="temps-summary" class="temps-summary"></div>
         <main class="table-wrap">
           <table>
