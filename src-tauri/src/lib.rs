@@ -63,6 +63,10 @@ struct ProcInfo {
     exe: String,
     status: String,
     run_time: u64,
+    /// Summed GPU engine utilization across all adapters, percent (0-100+).
+    /// Populated by the sampler loop from PDH "GPU Engine" counters; 0 until
+    /// the first GPU sample completes.
+    gpu: f32,
 }
 
 #[derive(Serialize, Clone)]
@@ -162,6 +166,7 @@ fn build_snapshot(sys: &mut System, users: &Users) -> Snapshot {
                     .unwrap_or_default(),
                 status: p.status().to_string(),
                 run_time: p.run_time(),
+                gpu: 0.0,
             }
         })
         .collect();
@@ -316,7 +321,7 @@ fn sampler_loop(shared: Arc<Shared>) {
     loop {
         std::thread::sleep(Duration::from_secs(SAMPLE_SECS));
 
-        let snap = {
+        let mut snap = {
             let mut sys = shared.sys.lock().unwrap();
             let s = build_snapshot(&mut sys, &shared.users);
             if let Ok(blocks) = shared.blocks.read() {
@@ -324,6 +329,15 @@ fn sampler_loop(shared: Arc<Shared>) {
             }
             s
         };
+
+        let gpu_usage = sample_gpu_usage();
+        if !gpu_usage.is_empty() {
+            for p in snap.processes.iter_mut() {
+                if let Some(&pct) = gpu_usage.get(&p.pid) {
+                    p.gpu = pct;
+                }
+            }
+        }
 
         #[cfg(windows)]
         {
@@ -1012,6 +1026,103 @@ fn get_temperatures(state: State<'_, Arc<Shared>>) -> Temperatures {
     out.sensors.extend(acpi);
     out.sensors.extend(gpu);
     out
+}
+
+// --- per-app GPU usage (PDH "GPU Engine" counters) ---------------------------
+
+/// Parse the PID out of a "GPU Engine" counter instance name, e.g.
+/// `pid_1234_luid_0x00000000_0x0000ABCD_phys_0_eng_0_engtype_3D`.
+#[cfg(windows)]
+fn gpu_instance_pid(instance: &str) -> Option<u32> {
+    let rest = instance.strip_prefix("pid_")?;
+    rest[..rest.find('_')?].parse().ok()
+}
+
+/// Sample per-process GPU usage once via PDH. Opens a fresh query, adds a
+/// counter for every running (pid, adapter, engine) instance under the
+/// `GPU Engine` object, then takes two snapshots ~300ms apart (the
+/// "Utilization Percentage" counter is a time-delta type and needs two
+/// samples to produce a rate). Engines/adapters for the same pid are summed,
+/// matching Task Manager's single per-process "GPU" column — so multi-GPU
+/// systems are covered without needing a separate per-adapter breakdown.
+#[cfg(windows)]
+fn sample_gpu_usage() -> HashMap<u32, f32> {
+    use windows_sys::Win32::System::Performance::{
+        PdhAddCounterW, PdhCloseQuery, PdhCollectQueryData, PdhExpandWildCardPathW,
+        PdhGetFormattedCounterValue, PdhOpenQueryW, PDH_FMT_COUNTERVALUE, PDH_FMT_DOUBLE,
+        PDH_HCOUNTER, PDH_HQUERY,
+    };
+
+    const ERROR_SUCCESS: u32 = 0;
+
+    fn to_wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    let mut result = HashMap::new();
+    let wildcard = to_wide(r"\GPU Engine(*)\Utilization Percentage");
+
+    // First call with no buffer just reports the required size.
+    let mut needed: u32 = 0;
+    unsafe {
+        PdhExpandWildCardPathW(std::ptr::null(), wildcard.as_ptr(), std::ptr::null_mut(), &mut needed, 0);
+    }
+    if needed == 0 {
+        return result; // no GPU engine instances (no GPU load, or unsupported driver)
+    }
+    let mut buf = vec![0u16; needed as usize];
+    let status = unsafe {
+        PdhExpandWildCardPathW(std::ptr::null(), wildcard.as_ptr(), buf.as_mut_ptr(), &mut needed, 0)
+    };
+    if status != ERROR_SUCCESS {
+        return result;
+    }
+
+    let paths: Vec<String> = buf
+        .split(|&c| c == 0)
+        .filter(|s| !s.is_empty())
+        .map(String::from_utf16_lossy)
+        .collect();
+
+    let mut hquery: PDH_HQUERY = std::ptr::null_mut();
+    if unsafe { PdhOpenQueryW(std::ptr::null(), 0, &mut hquery) } != ERROR_SUCCESS {
+        return result;
+    }
+
+    let mut counters: Vec<(u32, PDH_HCOUNTER)> = Vec::with_capacity(paths.len());
+    for path in &paths {
+        let Some(pid) = gpu_instance_pid(path) else { continue };
+        let wpath = to_wide(path);
+        let mut hcounter: PDH_HCOUNTER = std::ptr::null_mut();
+        if unsafe { PdhAddCounterW(hquery, wpath.as_ptr(), 0, &mut hcounter) } == ERROR_SUCCESS {
+            counters.push((pid, hcounter));
+        }
+    }
+
+    unsafe { PdhCollectQueryData(hquery) };
+    std::thread::sleep(Duration::from_millis(300));
+    unsafe { PdhCollectQueryData(hquery) };
+
+    for (pid, hcounter) in counters {
+        let mut value = PDH_FMT_COUNTERVALUE::default();
+        let status = unsafe {
+            PdhGetFormattedCounterValue(hcounter, PDH_FMT_DOUBLE, std::ptr::null_mut(), &mut value)
+        };
+        if status == ERROR_SUCCESS {
+            let pct = unsafe { value.Anonymous.doubleValue } as f32;
+            if pct.is_finite() && pct > 0.0 {
+                *result.entry(pid).or_insert(0.0) += pct;
+            }
+        }
+    }
+
+    unsafe { PdhCloseQuery(hquery) };
+    result
+}
+
+#[cfg(not(windows))]
+fn sample_gpu_usage() -> HashMap<u32, f32> {
+    HashMap::new()
 }
 
 // --- privacy / sensor access (Windows ConsentStore) -------------------------

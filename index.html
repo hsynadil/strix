@@ -45,6 +45,12 @@
       </nav>
     </header>
 
+    <div id="update-bar" class="admin-bar accent" hidden>
+      <span id="update-text"></span>
+      <button id="update-open" class="ghost">View release</button>
+      <button id="update-dismiss" class="icon-tab" title="Dismiss">✕</button>
+    </div>
+
     <!-- Live view -->
     <section id="live-view" class="view">
       <div class="toolbar">
@@ -71,6 +77,7 @@
               <th class="sortable" data-key="user">User</th>
               <th class="sortable num" data-key="pid">PID</th>
               <th class="sortable num" data-key="cpu">CPU %</th>
+              <th class="sortable num" data-key="gpu">GPU %</th>
               <th class="sortable num" data-key="memory">Memory</th>
               <th class="sortable num" data-key="disk">Disk R/W</th>
               <th></th>
@@ -189,6 +196,10 @@
         <label class="set-row">
           <input type="checkbox" id="set-autostart" />
           <span>Launch Strix when Windows starts</span>
+        </label>
+        <label class="set-row">
+          <input type="checkbox" id="set-osd" />
+          <span>Show OSD overlay (CPU / RAM / temp, always-on-top, click-through)</span>
         </label>
         <div id="set-admin-row" class="set-row" hidden>
           <button id="set-admin" class="ghost">⚡ Restart as administrator</button>

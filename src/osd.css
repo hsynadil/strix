@@ -1,0 +1,84 @@
+:root {
+  --muted: #8b949e;
+  --text: #e6edf3;
+  --warm: #d9a441;
+  --hot: #f85149;
+  --green: #3fb950;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  overflow: hidden;
+  user-select: none;
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+
+#osd {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  padding: 0 14px;
+  background: rgba(14, 17, 22, 0.72);
+  border: 1px solid rgba(230, 237, 243, 0.08);
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.osd-item {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.osd-label {
+  color: var(--muted);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.osd-value {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: 12.6px;
+}
+
+.osd-value.warm { color: var(--warm); }
+.osd-value.hot { color: var(--hot); }
+
+.osd-sep {
+  width: 1px;
+  height: 14px;
+  background: rgba(230, 237, 243, 0.14);
+  flex: none;
+}
+
+.osd-sensors {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: -5px;
+}
+
+.osd-sensor {
+  display: flex;
+  color: var(--muted);
+  opacity: 0.45;
+  transition: color 0.2s ease, opacity 0.2s ease;
+}
+
+.osd-sensor svg {
+  width: 12px;
+  height: 12px;
+  display: block;
+}
+
+.osd-sensor.active {
+  color: var(--green);
+  opacity: 1;
+}

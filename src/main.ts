@@ -1,5 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
+import { Window } from "@tauri-apps/api/window";
 import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
 interface ProcInfo {
   pid: number;
@@ -12,6 +15,7 @@ interface ProcInfo {
   exe: string;
   status: string;
   run_time: number;
+  gpu: number;
 }
 
 interface SystemSummary {
@@ -27,10 +31,11 @@ interface Snapshot {
   processes: ProcInfo[];
 }
 
-type SortKey = "name" | "user" | "pid" | "cpu" | "memory" | "disk";
+type SortKey = "name" | "user" | "pid" | "cpu" | "gpu" | "memory" | "disk";
 
 interface GroupAgg {
   cpu: number;
+  gpu: number;
   memory: number;
   disk: number;
   count: number;
@@ -52,6 +57,7 @@ let sortDir: "asc" | "desc" = "desc";
 let filter = "";
 let paused = false;
 let groupBy = false;
+let osdEnabled = false;
 const expanded = new Set<string>();
 let latest: ProcInfo[] = [];
 
@@ -66,6 +72,7 @@ function loadSettings() {
     if (typeof s.groupBy === "boolean") groupBy = s.groupBy;
     if (typeof s.sortKey === "string") sortKey = s.sortKey;
     if (s.sortDir === "asc" || s.sortDir === "desc") sortDir = s.sortDir;
+    if (typeof s.osdEnabled === "boolean") osdEnabled = s.osdEnabled;
   } catch {
     /* ignore malformed settings */
   }
@@ -74,7 +81,7 @@ function loadSettings() {
 function saveSettings() {
   localStorage.setItem(
     SETTINGS_KEY,
-    JSON.stringify({ pollMs, groupBy, sortKey, sortDir }),
+    JSON.stringify({ pollMs, groupBy, sortKey, sortDir, osdEnabled }),
   );
 }
 
@@ -123,6 +130,7 @@ function cmpProc(a: ProcInfo, b: ProcInfo): number {
     case "user": return dir((a.user || "").toLowerCase().localeCompare((b.user || "").toLowerCase()));
     case "pid": return dir(a.pid - b.pid);
     case "cpu": return dir(a.cpu - b.cpu);
+    case "gpu": return dir(a.gpu - b.gpu);
     case "memory": return dir(a.memory - b.memory);
     case "disk": return dir((a.disk_read + a.disk_write) - (b.disk_read + b.disk_write));
   }
@@ -156,6 +164,7 @@ function buildRows(): DisplayRow[] {
       name,
       procs,
       cpu: procs.reduce((s, p) => s + p.cpu, 0),
+      gpu: procs.reduce((s, p) => s + p.gpu, 0),
       memory: procs.reduce((s, p) => s + p.memory, 0),
       disk: procs.reduce((s, p) => s + p.disk_read + p.disk_write, 0),
       minPid: Math.min(...procs.map((p) => p.pid)),
@@ -170,6 +179,7 @@ function buildRows(): DisplayRow[] {
       case "user": return dir(a.user.toLowerCase().localeCompare(b.user.toLowerCase()));
       case "pid": return dir(a.minPid - b.minPid);
       case "cpu": return dir(a.cpu - b.cpu);
+      case "gpu": return dir(a.gpu - b.gpu);
       case "memory": return dir(a.memory - b.memory);
       case "disk": return dir(a.disk - b.disk);
     }
@@ -182,7 +192,7 @@ function buildRows(): DisplayRow[] {
       key: `g:${g.name}`,
       kind: "group",
       name: g.name,
-      agg: { cpu: g.cpu, memory: g.memory, disk: g.disk, count: g.count, user: g.user, expanded: isOpen },
+      agg: { cpu: g.cpu, gpu: g.gpu, memory: g.memory, disk: g.disk, count: g.count, user: g.user, expanded: isOpen },
     });
     if (isOpen) {
       for (const p of g.procs.slice().sort(cmpProc)) {
@@ -202,6 +212,7 @@ interface RowRec {
   user: HTMLTableCellElement;
   pid: HTMLTableCellElement;
   cpu: HTMLTableCellElement;
+  gpu: HTMLTableCellElement;
   mem: HTMLTableCellElement;
   disk: HTMLTableCellElement;
   expander?: HTMLSpanElement;
@@ -222,6 +233,7 @@ function createProcRow(): RowRec {
   const user = mkCell(tr, "muted");
   const pid = mkCell(tr, "num muted");
   const cpu = mkCell(tr, "num");
+  const gpu = mkCell(tr, "num");
   const mem = mkCell(tr, "num");
   const disk = mkCell(tr, "num muted");
   const killTd = mkCell(tr, "num");
@@ -230,7 +242,7 @@ function createProcRow(): RowRec {
   btn.textContent = "✕";
   btn.title = "End task";
   killTd.appendChild(btn);
-  return { tr, kind: "proc", name, user, pid, cpu, mem, disk };
+  return { tr, kind: "proc", name, user, pid, cpu, gpu, mem, disk };
 }
 
 function createGroupRow(name: string): RowRec {
@@ -248,17 +260,18 @@ function createGroupRow(name: string): RowRec {
   const user = mkCell(tr, "muted");
   const pid = mkCell(tr, "num muted");
   const cpu = mkCell(tr, "num");
+  const gpu = mkCell(tr, "num");
   const mem = mkCell(tr, "num");
   const disk = mkCell(tr, "num muted");
   mkCell(tr, "num");
-  return { tr, kind: "group", name: label as unknown as HTMLTableCellElement, user, pid, cpu, mem, disk, expander };
+  return { tr, kind: "group", name: label as unknown as HTMLTableCellElement, user, pid, cpu, gpu, mem, disk, expander };
 }
 
 function setText(el: { textContent: string | null }, t: string) {
   if (el.textContent !== t) el.textContent = t;
 }
 
-function cpuClass(v: number): string {
+function pctClass(v: number): string {
   return `num ${v >= 25 ? "hot" : v >= 5 ? "warm" : ""}`.trim();
 }
 
@@ -272,7 +285,9 @@ function updateProcRow(r: RowRec, p: ProcInfo, indent: boolean) {
   setText(r.user, p.user || "—");
   setText(r.pid, String(p.pid));
   setText(r.cpu, p.cpu.toFixed(1));
-  if (r.cpu.className !== cpuClass(p.cpu)) r.cpu.className = cpuClass(p.cpu);
+  if (r.cpu.className !== pctClass(p.cpu)) r.cpu.className = pctClass(p.cpu);
+  setText(r.gpu, p.gpu.toFixed(1));
+  if (r.gpu.className !== pctClass(p.gpu)) r.gpu.className = pctClass(p.gpu);
   setText(r.mem, fmtBytes(p.memory));
   setText(r.disk, fmtRate(p.disk_read + p.disk_write));
 }
@@ -285,7 +300,9 @@ function updateGroupRow(r: RowRec, name: string, agg: GroupAgg) {
   setText(r.user, agg.user);
   setText(r.pid, "");
   setText(r.cpu, agg.cpu.toFixed(1));
-  if (r.cpu.className !== cpuClass(agg.cpu)) r.cpu.className = cpuClass(agg.cpu);
+  if (r.cpu.className !== pctClass(agg.cpu)) r.cpu.className = pctClass(agg.cpu);
+  setText(r.gpu, agg.gpu.toFixed(1));
+  if (r.gpu.className !== pctClass(agg.gpu)) r.gpu.className = pctClass(agg.gpu);
   setText(r.mem, fmtBytes(agg.memory));
   setText(r.disk, fmtRate(agg.disk));
 }
@@ -789,6 +806,17 @@ function stopTempsTimer() {
   tempsTimer = undefined;
 }
 
+async function setOsdVisible(visible: boolean) {
+  try {
+    const osd = await Window.getByLabel("osd");
+    if (!osd) return;
+    if (visible) await osd.show();
+    else await osd.hide();
+  } catch {
+    /* osd window unavailable */
+  }
+}
+
 function switchView(view: View) {
   currentView = view;
   byId("live-view").hidden = view !== "live";
@@ -1004,6 +1032,94 @@ function closeDetails() {
   detailPid = null;
 }
 
+// --- update check (GitHub Releases) ------------------------------------------
+// Simple first cut: no in-app install, just "an update exists -> open the
+// release page". Checked at most once every ~20h, cached in localStorage.
+const UPDATE_REPO = "hsynadil/strix";
+const UPDATE_CHECK_KEY = "strix.updateCheck";
+const UPDATE_CHECK_INTERVAL_MS = 20 * 60 * 60 * 1000;
+
+interface UpdateCheckCache {
+  checkedAt?: number;
+  latestTag?: string;
+  url?: string;
+  available?: boolean;
+  dismissed?: string;
+}
+
+function parseVersion(v: string): number[] {
+  return v
+    .replace(/^v/i, "")
+    .split(".")
+    .map((n) => parseInt(n, 10) || 0);
+}
+
+function isNewerVersion(latest: string, current: string): boolean {
+  const a = parseVersion(latest);
+  const b = parseVersion(current);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const x = a[i] ?? 0;
+    const y = b[i] ?? 0;
+    if (x !== y) return x > y;
+  }
+  return false;
+}
+
+function loadUpdateCache(): UpdateCheckCache {
+  try {
+    return JSON.parse(localStorage.getItem(UPDATE_CHECK_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function saveUpdateCache(cache: UpdateCheckCache) {
+  localStorage.setItem(UPDATE_CHECK_KEY, JSON.stringify(cache));
+}
+
+function showUpdateBar(tag: string, url: string) {
+  byId("update-text").textContent = `Update available: ${tag}`;
+  byId("update-bar").hidden = false;
+  byId("update-open").onclick = () => openUrl(url);
+  byId("update-dismiss").onclick = () => {
+    byId("update-bar").hidden = true;
+    const cache = loadUpdateCache();
+    cache.dismissed = tag;
+    saveUpdateCache(cache);
+  };
+}
+
+async function checkForUpdate() {
+  const cache = loadUpdateCache();
+  const now = Date.now();
+
+  // Within the throttle window: reuse the cached result instead of re-fetching.
+  if (cache.checkedAt && now - cache.checkedAt < UPDATE_CHECK_INTERVAL_MS) {
+    if (cache.available && cache.latestTag && cache.latestTag !== cache.dismissed) {
+      showUpdateBar(cache.latestTag, cache.url!);
+    }
+    return;
+  }
+
+  try {
+    const res = await fetch(`https://api.github.com/repos/${UPDATE_REPO}/releases/latest`);
+    if (!res.ok) {
+      // No releases published yet, rate-limited, offline, etc. — try again later.
+      saveUpdateCache({ ...cache, checkedAt: now });
+      return;
+    }
+    const data = await res.json();
+    const tag: string = data.tag_name ?? "";
+    const url: string = data.html_url ?? `https://github.com/${UPDATE_REPO}/releases`;
+    const current = await getVersion();
+    const available = !!tag && isNewerVersion(tag, current);
+    saveUpdateCache({ checkedAt: now, latestTag: tag, url, available, dismissed: cache.dismissed });
+    if (available && tag !== cache.dismissed) showUpdateBar(tag, url);
+  } catch {
+    // Offline or GitHub unreachable — silently skip, retry on next launch.
+  }
+}
+
 // --- wiring -----------------------------------------------------------------
 
 window.addEventListener("DOMContentLoaded", () => {
@@ -1108,6 +1224,7 @@ window.addEventListener("DOMContentLoaded", () => {
       /* plugin unavailable */
     }
     byId("set-admin-row").hidden = elevated; // only offer elevate when not admin
+    byId<HTMLInputElement>("set-osd").checked = osdEnabled;
     byId("settings-modal").hidden = false;
   });
   const elevate = async () => {
@@ -1131,6 +1248,11 @@ window.addEventListener("DOMContentLoaded", () => {
     } catch (err) {
       alert(`Autostart change failed: ${err}`);
     }
+  });
+  byId<HTMLInputElement>("set-osd").addEventListener("change", async (e) => {
+    osdEnabled = (e.target as HTMLInputElement).checked;
+    saveSettings();
+    await setOsdVisible(osdEnabled);
   });
 
   // App Details: right-click or double-click a process row.
@@ -1181,6 +1303,8 @@ window.addEventListener("DOMContentLoaded", () => {
 
   loadBlocks().then(updateBlockedCount);
   invoke<boolean>("is_elevated").then((v) => { elevated = v; }).catch(() => {});
+  checkForUpdate();
+  if (osdEnabled) setOsdVisible(true);
 
   updateSortHeaders();
   poll();

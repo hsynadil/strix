@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/osd.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Strix OSD</title>
+    <script type="module" src="/src/osd.ts" defer></script>
+  </head>
+  <body>
+    <div id="osd">
+      <span class="osd-item"><span class="osd-label">C</span><span id="osd-cpu" class="osd-value">—</span></span>
+      <span class="osd-sep"></span>
+      <span class="osd-item"><span class="osd-label">R</span><span id="osd-ram" class="osd-value">—</span></span>
+      <span class="osd-sep"></span>
+      <span class="osd-item"><span id="osd-temp" class="osd-value">—</span></span>
+      <span class="osd-sep"></span>
+      <span class="osd-sensors">
+        <span id="osd-mic" class="osd-sensor" title="Microphone">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+            <line x1="12" y1="19" x2="12" y2="23" />
+            <line x1="8" y1="23" x2="16" y2="23" />
+          </svg>
+        </span>
+        <span id="osd-cam" class="osd-sensor" title="Camera">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+            <circle cx="12" cy="13" r="4" />
+          </svg>
+        </span>
+      </span>
+    </div>
+  </body>
+</html>

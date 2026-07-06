@@ -88,15 +88,34 @@ Detect and alert on camera / microphone / location access.
 - [x] **Group the Temps list** by device (CPU / GPU / Motherboard)
 
 ### Medium
-- [ ] **New app icon / branding** (owl theme) — generate icon set via `tauri icon`
-- [ ] **Auto-update from GitHub Releases** — check latest tag, notify, one-click update.
-      Full in-app install needs `tauri-plugin-updater` + a signed release manifest;
-      a simpler first cut is "update available → open the release page".
-- [ ] **Per-app GPU usage** via PDH `GPU Engine` counters (Task-Manager style);
+- [x] **New app icon / branding** (owl theme) — generate icon set via `tauri icon`
+      (flat geometric owl mark in the app's dark/blue/amber palette; source in `branding/`)
+- [x] **Auto-update from GitHub Releases** — check latest tag, notify, one-click update.
+      Simple first cut shipped: frontend `fetch`'s the GitHub Releases API (no new
+      Rust dep needed), compares semver, shows a dismissible top banner →
+      "View release" opens the release page. Throttled to ~1 check/20h,
+      dismissal remembered per-tag in localStorage.
+      Full in-app install (via `tauri-plugin-updater` + a signed release manifest)
+      is still open if we want one-click install later.
+- [x] **Per-app GPU usage** via PDH `GPU Engine` counters (Task-Manager style);
       on multi-GPU systems attribute usage to the right adapter (LUID in the counter)
-- [ ] **OSD overlay** — a transparent, always-on-top, click-through Tauri window
+      Implemented in `sample_gpu_usage()` (src-tauri/src/lib.rs): expands the
+      `\GPU Engine(*)\Utilization Percentage` wildcard every sampler cycle, so
+      it naturally covers every adapter's engines (LUID is in the instance
+      name), summed per-pid into a new `gpu` field on `ProcInfo` — mirrors
+      Task Manager's single per-process GPU column rather than a separate
+      per-adapter breakdown. New "GPU %" column added to the Live table
+      (sortable, groupable, same hot/warm thresholds as CPU%).
+- [x] **OSD overlay** — a transparent, always-on-top, click-through Tauri window
       showing CPU/GPU temp + usage. Works for windowed/borderless apps; true
       exclusive-fullscreen games can't be overlaid by a normal window.
+      Shipped as a second static window (`osd.html` / `src/osd.ts`, label `osd`),
+      a minimalist pill pinned top-center on the primary monitor,
+      `setIgnoreCursorEvents(true)` for click-through. Toggled from Settings →
+      "Show OSD overlay"; polls `get_snapshot` + `get_temperatures` every 2s,
+      plus small mic/camera glyphs (from `get_sensor_access`) that light up
+      green while actively in use. GPU usage isn't in the overlay yet —
+      Phase 8's PDH per-app GPU item still needs to land first.
 
 ### Hard / research
 - [ ] **Per-app network usage** — mapping bytes to a PID needs ETW (kernel network
@@ -104,6 +123,16 @@ Detect and alert on camera / microphone / location access.
 - [ ] **Open browser tabs by name** — only the *active* tab title is readily available
       (window title). Listing *all* tabs needs per-browser hooks (DevTools protocol /
       UI Automation / an extension) and is fragile — scope carefully.
+- [ ] **In-game FPS on the OSD overlay** — deferred, needs its own session.
+      No shortcut via NVIDIA: `nvidia-smi`/NVAPI expose GPU utilization/clocks/temp
+      but not per-app FPS (GeForce Experience gets it by instrumenting Present calls
+      *inside their own driver*, not via a public API). The two real options are
+      DLL injection + Present hooking (RTSS/PresentMon-style — **avoid**: real
+      anti-cheat ban risk in games with BattlEye/EAC) or ETW-based tracing of the
+      DXGI/D3D Present events (PresentMon's actual approach — no injection, so it
+      doesn't trip anti-cheat, but is a substantial standalone project, comparable
+      to or bigger than the per-app network item above). Any implementation must
+      go the ETW route, never injection.
 
 ---
 
